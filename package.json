@@ -1,0 +1,37 @@
+{
+  "name": "@stonyx/cron",
+  "keywords": [
+    "stonyx-async",
+    "stonyx-module"
+  ],
+  "version": "0.0.1",
+  "description": "",
+  "main": "src/main.js",
+  "type": "module",
+  "exports": {
+    ".": "./src/main.js"
+  },
+  "scripts": {
+    "test": "qunit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abofs/stonyx-cron.git"
+  },
+  "author": "Stone Costa",
+  "license": "Apache-2.0",
+  "contributors": [
+    "Stone Costa <stone.costa@synamicd.com>"
+  ],
+  "bugs": {
+    "url": "https://github.com/abofs/stonyx-cron/issues"
+  },
+  "homepage": "https://github.com/abofs/stonyx-cron#readme",
+  "dependencies": {
+    "@stonyx/utils": "^0.0.1",
+    "stonyx": "^0.0.3"
+  },
+  "devDependencies": {
+    "qunit": "^2.24.1"
+  }
+}

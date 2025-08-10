@@ -1,0 +1,13 @@
+# dependencies
+/node_modules/
+
+# config
+config/environment.js
+
+# logs
+*logs/*
+
+# os / IDE
+.vscode/*
+*.vsix%
+*DS_Store*
