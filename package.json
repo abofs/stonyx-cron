@@ -4,7 +4,7 @@
     "stonyx-async",
     "stonyx-module"
   ],
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "",
   "main": "src/main.js",
   "type": "module",
@@ -31,10 +31,10 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "^0.0.3",
+    "@stonyx/utils": "^0.0.4",
     "qunit": "^2.24.1"
   },
   "dependencies": {
-    "stonyx": "^0.0.6"
+    "stonyx": "^0.0.7"
   }
 }
