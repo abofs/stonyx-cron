@@ -4,10 +4,13 @@
     "stonyx-async",
     "stonyx-module"
   ],
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "",
   "main": "src/main.js",
   "type": "module",
+  "files": [
+    "*"
+  ],
   "exports": {
     ".": "./src/main.js"
   },
