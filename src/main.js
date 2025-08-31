@@ -1,7 +1,7 @@
 import config from 'stonyx/config';
 import log from 'stonyx/log';
 import { getTimestamp } from "@stonyx/utils/date";
-import MinHeap from './min-heap.js';
+import MinHeap from '@stonyx/cron/min-heap';
 
 export default class Cron {
   jobs = {};
