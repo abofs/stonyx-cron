@@ -16,7 +16,7 @@ cron.register('exampleJob', async () => {
 
 // Unregister the job when no longer needed
 // cron.unregister('exampleJob');
-````
+```
 
 ## How it works
 
