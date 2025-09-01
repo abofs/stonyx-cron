@@ -2,13 +2,6 @@
 
 A small, lightweight cron/job scheduling utility for asynchronous jobs. Designed to schedule, run, and automatically re-schedule jobs at precise intervals with optional debug logging.
 
-## Running the test suite
-```
-
-npm test
-
-````
-
 ## Usage
 
 ```js
