@@ -12,10 +12,11 @@
     "*"
   ],
   "exports": {
-    ".": "./src/main.js"
+    ".": "./src/main.js",
+    "./min-heap": "./src/min-heap.js"
   },
   "scripts": {
-    "test": "qunit"
+    "test": "qunit --require ./stonyx-bootstrap.cjs"
   },
   "repository": {
     "type": "git",
@@ -31,10 +32,11 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "^0.1.0",
-    "qunit": "^2.24.1"
+    "@stonyx/utils": "file:../stonyx-utils",
+    "qunit": "^2.24.1",
+    "sinon": "^21.0.0"
   },
   "dependencies": {
-    "stonyx": "^0.1.0"
+    "stonyx": "file:../stonyx"
   }
 }

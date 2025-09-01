@@ -1,5 +1,5 @@
 import QUnit from 'qunit';
-import MinHeap from '../src/min-heap.js';
+import MinHeap from '@stonyx/cron/min-heap';
 
 const { module, test } = QUnit;
 
