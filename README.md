@@ -49,4 +49,3 @@ config.debug = true; // optional: debug logs for job registration and execution
 ## License
 
 Apache — do what you want, just keep attribution.
-
