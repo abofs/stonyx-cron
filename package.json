@@ -1,7 +1,6 @@
 {
   "name": "@stonyx/cron",
   "keywords": [
-    "stonyx-async",
     "stonyx-module"
   ],
   "version": "0.1.0",
