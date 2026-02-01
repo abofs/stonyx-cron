@@ -20,19 +20,18 @@ cron.register('exampleJob', async () => {
 
 ## How it works
 
-`stonyx-cron` uses a min-heap internally to efficiently track the next job to run. Each job has a scheduled trigger time, and the heap ensures the job with the earliest trigger is always at the top.  
+`stonyx-cron` uses a min-heap internally to efficiently track the next job to run. Each job has a scheduled trigger time, and the heap ensures the job with the earliest trigger is always at the top.
 
 When a job is executed, its next trigger time is updated, and it is re-inserted into the heap. This allows `Cron` to always know which job should run next without scanning all jobs, keeping scheduling efficient even with many jobs.
 
-
-### Public Methods
+## Public Methods
 
 |    Method    |                                Parameters                                | Description                                                                                                              |
 | :----------: | :----------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------------------- |
 |  `register`  | `key: string, callback: Function, interval: number, runOnInit?: boolean` | Register a new job with a given interval in seconds. If `runOnInit` is true, the job runs immediately upon registration. |
 | `unregister` |                               `key: string`                              | Remove a previously registered job.                                                                                      |
 
-> All other methods and classes (like `MinHeap`) are used internally by `Cron` and are not intended for direct use.
+> All other methods and classes (like `MinHeap`) are used internally and are not intended for direct use.
 
 ## Configuration
 
