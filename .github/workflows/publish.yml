@@ -56,15 +56,15 @@ jobs:
 
       - name: Bump version (custom)
         if: ${{ github.event.inputs.custom-version != '' }}
-        run: npm version ${{ github.event.inputs.custom-version }} --no-git-tag-version
+        run: pnpm version ${{ github.event.inputs.custom-version }} --no-git-tag-version
 
       - name: Bump version (prerelease alpha)
         if: ${{ github.event.inputs.version-type == 'alpha' && github.event.inputs.custom-version == '' }}
-        run: npm version prerelease --preid=alpha --no-git-tag-version
+        run: pnpm version prerelease --preid=alpha --no-git-tag-version
 
       - name: Bump version (standard)
         if: ${{ github.event.inputs.version-type != 'alpha' && github.event.inputs.custom-version == '' }}
-        run: npm version ${{ github.event.inputs.version-type }} --no-git-tag-version
+        run: pnpm version ${{ github.event.inputs.version-type }} --no-git-tag-version
 
       - name: Get package version
         id: package-version
@@ -72,10 +72,10 @@ jobs:
 
       - name: Publish to NPM (alpha)
         if: ${{ github.event.inputs.version-type == 'alpha' || contains(steps.package-version.outputs.version, 'alpha') }}
-        run: npm publish --tag alpha --access public
+        run: pnpm publish --tag alpha --access public
       - name: Publish to NPM (stable)
         if: ${{ github.event.inputs.version-type != 'alpha' && !contains(steps.package-version.outputs.version, 'alpha') }}
-        run: npm publish --access public
+        run: pnpm publish --access public
       - name: Commit version bump
         run: |
           git add package.json
