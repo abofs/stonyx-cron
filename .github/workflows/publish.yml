@@ -1,6 +1,7 @@
 name: Publish to NPM
 
 on:
+  # Manual trigger (kept for flexibility)
   workflow_dispatch:
     inputs:
       version-type:
@@ -17,9 +18,19 @@ on:
         required: false
         type: string
 
+  # Auto-publish alpha on PR
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, dev]
+
+  # Auto-publish stable on merge to main
+  push:
+    branches: [main]
+
 permissions:
   contents: write
   id-token: write  # Required for npm provenance
+  pull-requests: write  # For PR comments
 
 jobs:
   publish:
@@ -30,6 +41,8 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          # For PR events, check out the PR branch
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -54,29 +67,49 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # Determine version type based on trigger
+      - name: Determine version bump type
+        id: version-type
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "type=alpha" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "type=patch" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.custom-version }}" != "" ]; then
+            echo "type=custom" >> $GITHUB_OUTPUT
+          else
+            echo "type=${{ github.event.inputs.version-type }}" >> $GITHUB_OUTPUT
+          fi
+
+      # Version bumping
       - name: Bump version (custom)
-        if: ${{ github.event.inputs.custom-version != '' }}
+        if: steps.version-type.outputs.type == 'custom'
         run: pnpm version ${{ github.event.inputs.custom-version }} --no-git-tag-version
 
-      - name: Bump version (prerelease alpha)
-        if: ${{ github.event.inputs.version-type == 'alpha' && github.event.inputs.custom-version == '' }}
+      - name: Bump version (alpha)
+        if: steps.version-type.outputs.type == 'alpha'
         run: pnpm version prerelease --preid=alpha --no-git-tag-version
 
-      - name: Bump version (standard)
-        if: ${{ github.event.inputs.version-type != 'alpha' && github.event.inputs.custom-version == '' }}
-        run: pnpm version ${{ github.event.inputs.version-type }} --no-git-tag-version
+      - name: Bump version (patch/minor/major)
+        if: steps.version-type.outputs.type == 'patch' || steps.version-type.outputs.type == 'minor' || steps.version-type.outputs.type == 'major'
+        run: pnpm version ${{ steps.version-type.outputs.type }} --no-git-tag-version
 
       - name: Get package version
         id: package-version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
+      # Publishing
       - name: Publish to NPM (alpha)
-        if: ${{ github.event.inputs.version-type == 'alpha' || contains(steps.package-version.outputs.version, 'alpha') }}
-        run: pnpm publish --tag alpha --access public
+        if: contains(steps.package-version.outputs.version, 'alpha')
+        run: pnpm publish --tag alpha --access public --no-git-checks
+
       - name: Publish to NPM (stable)
-        if: ${{ github.event.inputs.version-type != 'alpha' && !contains(steps.package-version.outputs.version, 'alpha') }}
+        if: "!contains(steps.package-version.outputs.version, 'alpha')"
         run: pnpm publish --access public
-      - name: Commit version bump
+
+      # Only commit and tag for stable releases (push to main or manual stable)
+      - name: Commit version bump and create tag
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !contains(steps.package-version.outputs.version, 'alpha'))
         run: |
           git add package.json
           git commit -m "chore: release v${{ steps.package-version.outputs.version }}"
@@ -84,6 +117,7 @@ jobs:
           git push origin main --tags
 
       - name: Create GitHub Release
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !contains(steps.package-version.outputs.version, 'alpha'))
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,4 +125,19 @@ jobs:
           tag_name: v${{ steps.package-version.outputs.version }}
           release_name: v${{ steps.package-version.outputs.version }}
           draft: false
-          prerelease: ${{ contains(steps.package-version.outputs.version, 'alpha') }}
+          prerelease: false
+
+      # Add PR comment with alpha version info
+      - name: Comment on PR with alpha version
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const version = '${{ steps.package-version.outputs.version }}';
+            const packageName = require('./package.json').name;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🚀 Alpha Version Published\n\n**Version:** \`${version}\`\n\n**Install:**\n\`\`\`bash\npnpm add ${packageName}@${version}\n# or\npnpm add ${packageName}@alpha  # latest alpha\n\`\`\`\n\nThis alpha version is now available for testing!`
+            });
