@@ -15,7 +15,12 @@
     "./min-heap": "./src/min-heap.js"
   },
   "scripts": {
-    "test": "qunit --require ./stonyx-bootstrap.cjs"
+    "test": "qunit --require ./stonyx-bootstrap.cjs",
+    "prepublishOnly": "npm test"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "repository": {
     "type": "git",
