@@ -15,7 +15,7 @@
     "./min-heap": "./src/min-heap.js"
   },
   "scripts": {
-    "test": "qunit --require ./stonyx-bootstrap.cjs",
+    "test": "stonyx test",
     "prepublishOnly": "npm test"
   },
   "publishConfig": {
@@ -36,11 +36,11 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "^0.2.2",
+    "@stonyx/utils": "file:../stonyx-utils",
     "qunit": "^2.24.1",
     "sinon": "^21.0.0"
   },
   "dependencies": {
-    "stonyx": "^0.2.2"
+    "stonyx": "file:../stonyx"
   }
 }
