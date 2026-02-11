@@ -17,7 +17,7 @@ on:
         type: string
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main, dev]
+    branches: [main]
   push:
     branches: [main]
 
