@@ -1,6 +1,6 @@
 # Extension Guide
 
-## 8. Extension Points
+## Extension Points
 
 This section provides specific guidance for common feature additions.
 
@@ -183,7 +183,7 @@ async runDueJobs() {
 
 ---
 
-## 12. Common Pitfalls & Gotchas
+## Common Pitfalls & Gotchas
 
 ### Time Units Confusion
 **Pitfall:** Mixing seconds and milliseconds
@@ -269,7 +269,7 @@ hooks.afterEach(function () {
 
 ---
 
-## 13. Future Enhancement Opportunities
+## Future Enhancement Opportunities
 
 Ideas aligned with current architecture:
 

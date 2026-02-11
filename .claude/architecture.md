@@ -1,6 +1,6 @@
 # Architecture & Core Components
 
-## 4. Core Components Deep Dive
+## Core Components Deep Dive
 
 ### Cron Class (`stonyx-cron/src/main.js`)
 
@@ -97,7 +97,7 @@ items = [];  // Array backing the heap
 
 ---
 
-## 5. Dependencies & Integration
+## Dependencies & Integration
 
 ### Stonyx Framework Integration
 ```javascript
@@ -129,7 +129,7 @@ this.timer = setTimeout(() => this.runDueJobs(), delay);
 
 ---
 
-## 6. Code Patterns & Conventions
+## Code Patterns & Conventions
 
 ### Module System
 All modules use ES Module syntax with default exports:
@@ -182,7 +182,7 @@ const now = Date.now(); // WRONG: milliseconds instead of seconds
 
 ---
 
-## 9. Configuration Reference
+## Configuration Reference
 
 ### Module Configuration
 **File:** `stonyx-cron/config/environment.js`

@@ -1,6 +1,6 @@
 # Testing Guidelines
 
-## 7. Testing Guidelines
+## Testing Guidelines
 
 ### Test Structure
 Tests are located in `stonyx-cron/test/unit/` and use QUnit modules:

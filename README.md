@@ -31,7 +31,7 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 |  `register`  | `key: string, callback: Function, interval: number, runOnInit?: boolean` | Register a new job with a given interval in seconds. If `runOnInit` is true, the job runs immediately upon registration. |
 | `unregister` |                               `key: string`                              | Remove a previously registered job.                                                                                      |
 
-> All other methods and classes (like `MinHeap`) are used internally and are not intended for direct use.
+> `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
 
 ## Configuration
 
