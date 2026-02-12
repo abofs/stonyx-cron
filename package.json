@@ -36,11 +36,11 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "file:../stonyx-utils",
+    "@stonyx/utils": "0.2.3-beta.2",
     "qunit": "^2.24.1",
     "sinon": "^21.0.0"
   },
   "dependencies": {
-    "stonyx": "file:../stonyx"
+    "stonyx": "0.2.3-beta.0"
   }
 }
