@@ -3,7 +3,7 @@
   "keywords": [
     "stonyx-module"
   ],
-  "version": "0.2.1-beta.3",
+  "version": "0.2.1-beta.4",
   "description": "Cron/job scheduler for Stonyx framework",
   "main": "src/main.js",
   "type": "module",
