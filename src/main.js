@@ -16,8 +16,11 @@
 
 import config from 'stonyx/config';
 import log from 'stonyx/log';
+import { waitForModule } from 'stonyx';
 import { getTimestamp } from "@stonyx/utils/date";
 import MinHeap from '@stonyx/cron/min-heap';
+import CronService from './service.js';
+import * as persistence from './persistence.js';
 
 export default class Cron {
   jobs = {};
@@ -27,7 +30,31 @@ export default class Cron {
   constructor() {
     if (Cron.instance) return Cron.instance;
     Cron.instance = this;
+    this.service = new CronService();
   }
+
+  async init() {
+    if (config.cron?.persistence) {
+      try {
+        await waitForModule('orm');
+        await persistence.initPersistence();
+        this.service.persist = persistence;
+        this.log('ORM persistence enabled');
+      } catch (err) {
+        log.error('Failed to initialize cron persistence:', err);
+        throw err;
+      }
+    }
+
+    await this.service.start();
+  }
+
+  async shutdown() {
+    this.service.stop();
+    clearTimeout(this.timer);
+  }
+
+  // ── Legacy API (backwards-compatible) ───��─────────────────
 
   scheduleNextRun() {
     clearTimeout(this.timer);
@@ -88,7 +115,7 @@ export default class Cron {
   unregister(key) {
     const { heap, jobs } = this;
     const job = jobs[key];
-    
+
     if (!job) return;
 
     delete jobs[key];
@@ -105,7 +132,7 @@ export default class Cron {
 
   log(text, key = null) {
     if (!config.cron?.log) return;
-    
+
     const tag = key ? `Cron::${key}` : `Cron`;
     log.cron(`${tag} - ${text}:`);
   }
