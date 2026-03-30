@@ -1,8 +1,7 @@
 /**
- * Sample cron job definitions and expected serialized shapes.
+ * Sample cron job definitions.
  *
  * `definitions` — raw input as an AI or consumer would provide.
- * `serialized`  — the shape persisted to the ORM store after normalization + createJob.
  */
 
 export const definitions = {
@@ -61,52 +60,4 @@ export const definitions = {
     payload: { kind: 'agentTurn', message: 'paused task' },
     enabled: false,
   },
-};
-
-export const serialized = {
-  cronJobs: [
-    {
-      id: 'job-1',
-      name: 'Every Minute Check',
-      enabled: true,
-      deleteAfterRun: false,
-      sessionTarget: 'isolated',
-      wakeMode: 'now',
-      createdAtMs: 1750003200000,
-      updatedAtMs: 1750003200000,
-      schedule: { id: 'job-1', kind: 'every', everyMs: 60000 },
-      payload: { id: 'job-1', kind: 'agentTurn', message: 'run diagnostics' },
-      state: { id: 'job-1', nextRunAtMs: 1750003260000, consecutiveErrors: 0, scheduleErrorCount: 0 },
-      delivery: { id: 'job-1', mode: 'announce' },
-    },
-    {
-      id: 'job-2',
-      name: 'Nightly Cleanup',
-      enabled: true,
-      deleteAfterRun: false,
-      sessionTarget: 'main',
-      wakeMode: 'now',
-      createdAtMs: 1750003200000,
-      updatedAtMs: 1750003200000,
-      schedule: { id: 'job-2', kind: 'cron', expr: '0 3 * * *' },
-      payload: { id: 'job-2', kind: 'systemEvent', text: 'nightly cleanup cycle' },
-      state: { id: 'job-2', consecutiveErrors: 0, scheduleErrorCount: 0 },
-    },
-  ],
-  cronJobSchedules: [
-    { id: 'job-1', kind: 'every', everyMs: 60000 },
-    { id: 'job-2', kind: 'cron', expr: '0 3 * * *' },
-  ],
-  cronJobPayloads: [
-    { id: 'job-1', kind: 'agentTurn', message: 'run diagnostics' },
-    { id: 'job-2', kind: 'systemEvent', text: 'nightly cleanup cycle' },
-  ],
-  cronJobStates: [
-    { id: 'job-1', nextRunAtMs: 1750003260000, consecutiveErrors: 0, scheduleErrorCount: 0 },
-    { id: 'job-2', consecutiveErrors: 0, scheduleErrorCount: 0 },
-  ],
-  cronJobDeliveries: [
-    { id: 'job-1', mode: 'announce' },
-  ],
-  cronRuns: [],
 };
