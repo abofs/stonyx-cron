@@ -12,6 +12,13 @@
   ],
   "exports": {
     ".": "./src/main.js",
+    "./service": "./src/service.js",
+    "./cron-parser": "./src/cron-parser.js",
+    "./schedule": "./src/schedule.js",
+    "./job": "./src/job.js",
+    "./normalize": "./src/normalize.js",
+    "./locked": "./src/locked.js",
+    "./run-log": "./src/run-log.js",
     "./min-heap": "./src/min-heap.js"
   },
   "scripts": {
