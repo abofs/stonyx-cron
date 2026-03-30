@@ -2,7 +2,7 @@
  * CronService — the main API for advanced job scheduling.
  *
  * Manages jobs in memory with a min-heap for efficient next-job lookup.
- * Supports pluggable store interface (memory-only by default, ORM in PR 2).
+ * Supports optional ORM persistence via a pluggable store adapter.
  * All state mutations are serialized via async locking.
  */
 import config from 'stonyx/config';
@@ -27,6 +27,9 @@ export default class CronService {
 
     // Pluggable callbacks for consumers
     this.onJobDue = null;        // async (job) => { status, error?, summary? }
+
+    // Optional persistence adapter: { loadJobs, saveJob, removeJob, saveRun, save }
+    this.persist = null;
   }
 
   // ── Lifecycle ──────────────────────────────────────────────
@@ -38,8 +41,11 @@ export default class CronService {
     if (this.started) return;
     this.started = true;
 
-    if (initialJobs) {
-      for (const job of initialJobs) {
+    // Load from persistence if available and no explicit initialJobs
+    const jobs = initialJobs || (this.persist ? this.persist.loadJobs() : null);
+
+    if (jobs) {
+      for (const job of jobs) {
         this.jobs.set(job.id, job);
         if (job.enabled && job.state.nextRunAtMs) {
           this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
@@ -94,7 +100,7 @@ export default class CronService {
    * Add a new job. Input is normalized for AI compatibility.
    */
   async add(rawInput) {
-    return locked(() => {
+    return locked(async () => {
       const input = normalizeJobInput(recoverFlatParams(rawInput));
       const job = createJob(input);
       this.jobs.set(job.id, job);
@@ -102,6 +108,11 @@ export default class CronService {
       if (job.enabled && job.state.nextRunAtMs) {
         this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
         this.armTimer();
+      }
+
+      if (this.persist) {
+        this.persist.saveJob(job);
+        await this.persist.save();
       }
 
       return job;
@@ -112,7 +123,7 @@ export default class CronService {
    * Update an existing job.
    */
   async update(id, patch) {
-    return locked(() => {
+    return locked(async () => {
       const job = this.jobs.get(id);
       if (!job) throw new Error(`Job not found: ${id}`);
 
@@ -129,6 +140,11 @@ export default class CronService {
         this.armTimer();
       }
 
+      if (this.persist) {
+        this.persist.saveJob(job);
+        await this.persist.save();
+      }
+
       return job;
     });
   }
@@ -137,7 +153,7 @@ export default class CronService {
    * Remove a job.
    */
   async remove(id) {
-    return locked(() => {
+    return locked(async () => {
       const job = this.jobs.get(id);
       if (!job) throw new Error(`Job not found: ${id}`);
 
@@ -145,6 +161,11 @@ export default class CronService {
       this.removeFromHeap(id);
       this.runLog.removeJob(id);
       this.armTimer();
+
+      if (this.persist) {
+        this.persist.removeJob(id);
+        await this.persist.save();
+      }
     });
   }
 
@@ -266,16 +287,31 @@ export default class CronService {
       nextRunAtMs: job.state.nextRunAtMs,
     });
 
+    // Persist run log and updated job state
+    if (this.persist) {
+      this.persist.saveRun({ jobId: job.id, status, error, summary, runAtMs: startMs, durationMs });
+    }
+
     // Handle one-shot auto-delete
     if (job.deleteAfterRun && status === 'ok' && !job.enabled) {
       this.jobs.delete(job.id);
       this.runLog.removeJob(job.id);
+      if (this.persist) {
+        this.persist.removeJob(job.id);
+        await this.persist.save();
+      }
       return { status, summary, deleted: true };
     }
 
     // Re-insert into heap if still active
     if (job.enabled && job.state.nextRunAtMs) {
       this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
+    }
+
+    // Persist updated job state
+    if (this.persist) {
+      this.persist.saveJob(job);
+      await this.persist.save();
     }
 
     return { status, error, summary, durationMs };
@@ -298,6 +334,8 @@ export default class CronService {
 
   log(message) {
     if (!config.cron?.log) return;
-    log.cron(`Cron — ${message}`);
+    if (typeof log.cron === 'function') {
+      log.cron(`Cron — ${message}`);
+    }
   }
 }

@@ -1,7 +1,8 @@
 {
   "name": "@stonyx/cron",
   "keywords": [
-    "stonyx-module"
+    "stonyx-module",
+    "stonyx-async"
   ],
   "version": "0.2.1-beta.24",
   "description": "Cron/job scheduler for Stonyx framework",
@@ -19,7 +20,8 @@
     "./normalize": "./src/normalize.js",
     "./locked": "./src/locked.js",
     "./run-log": "./src/run-log.js",
-    "./min-heap": "./src/min-heap.js"
+    "./min-heap": "./src/min-heap.js",
+    "./persistence": "./src/persistence.js"
   },
   "scripts": {
     "test": "stonyx test",
