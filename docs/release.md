@@ -1,5 +1,7 @@
-# Release
+# Release Process
 
-Release instructions for `@stonyx/cron`.
+This package follows the Stonyx shared release pipeline managed by [stonyx-workflows](https://github.com/abofs/stonyx-workflows).
 
-<!-- TODO: Document release process -->
+See [stonyx-workflows/docs/release.md](https://github.com/abofs/stonyx-workflows/blob/main/docs/release.md) for the full release process, versioning scheme, and cascade publishing details.
+
+**npm package:** `@stonyx/cron`
