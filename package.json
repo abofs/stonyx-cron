@@ -8,7 +8,9 @@
   "main": "src/main.js",
   "type": "module",
   "files": [
-    "*"
+    "src",
+    "config",
+    "README.md"
   ],
   "exports": {
     ".": "./src/main.js",
