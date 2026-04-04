@@ -28,34 +28,7 @@
 
 ## 2. Architecture & Design Decisions
 
-### Singleton Pattern
-The `Cron` class uses a singleton pattern to ensure only one scheduler instance exists across the entire application. The constructor returns the existing instance if one has already been created.
-
-```javascript
-constructor() {
-  if (Cron.instance) return Cron.instance;
-  Cron.instance = this;
-}
-```
-
-**Rationale:** Prevents multiple competing schedulers and ensures consistent job management.
-
-### Min-Heap Priority Queue
-Jobs are stored in a min-heap ordered by `nextTrigger` timestamp, allowing O(log n) insertion and O(1) peek of the next job to run.
-
-**Heap Property:** Parent nodes have earlier `nextTrigger` values than their children, so the root is always the next job to execute.
-
-### Async Job Execution Strategy
-- Jobs are executed with `await job.callback()` to handle async operations
-- Errors are caught and logged but never crash the scheduler
-- After execution (success or failure), jobs are rescheduled and re-inserted into the heap
-- The scheduler reschedules itself after processing all due jobs
-
-### Configuration-Driven Logging
-Logging follows Stonyx patterns:
-- Check `config.debug` before debug logs
-- Check `config.cron?.log` before cron-specific logs
-- Use `log.cron()` for cron messages, `log.error()` for errors
+See [architecture.md](./architecture.md) for full details on the Cron and MinHeap classes, singleton pattern, async job execution, configuration-driven logging, and time handling.
 
 ---
 
