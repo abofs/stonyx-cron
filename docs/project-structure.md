@@ -2,9 +2,9 @@
 
 ## Detailed Guides
 
-- [Architecture & Core Components](./architecture.md) — Deep dive into Cron and MinHeap classes, dependencies, code patterns, and configuration reference
-- [Testing Guidelines](./testing.md) — Test structure, fake timers, spies/stubs patterns, and running tests
-- [Extension Guide](./extension-guide.md) — Extension points, common pitfalls, and future enhancement opportunities
+- [Architecture & Core Components](./architecture.md) -- Deep dive into Cron and MinHeap classes, dependencies, code patterns, and configuration reference
+- [Testing Guidelines](../.claude/testing.md) -- Test structure, fake timers, spies/stubs patterns, and running tests
+- [Extension Guide](./extension-guide.md) -- Extension points, common pitfalls, and future enhancement opportunities
 
 ---
 
@@ -64,11 +64,15 @@ Logging follows Stonyx patterns:
 ```
 stonyx-cron/
 ├── .claude/
-│   ├── project-structure.md             - Project overview & structure
+│   ├── CLAUDE.md                        - Agent entry point
+│   └── testing.md                       - Testing guidelines
+├── docs/
+│   ├── index.md                         - Documentation entry point
 │   ├── architecture.md                  - Core components & code patterns
-│   ├── testing.md                       - Testing guidelines
 │   ├── extension-guide.md              - Extension points & pitfalls
-│   └── improvements.md                 - Known improvement opportunities
+│   ├── improvements.md                 - Known improvement opportunities
+│   ├── project-structure.md             - Project overview & structure
+│   └── release.md                       - Release process
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                       - CI pipeline (PR checks)
