@@ -12,5 +12,9 @@ config/environment.js
 *.vsix%
 *DS_Store*
 
+# build output
+dist/
+dist-test/
+
 # npm auth (never commit tokens)
 .npmrc

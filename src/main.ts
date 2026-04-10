@@ -16,40 +16,48 @@
 
 import config from 'stonyx/config';
 import log from 'stonyx/log';
-import { getTimestamp } from "@stonyx/utils/date";
-import MinHeap from '@stonyx/cron/min-heap';
+import { getTimestamp } from '@stonyx/utils/date';
+import MinHeap, { type HeapItem } from './min-heap.js';
+
+interface CronJob extends HeapItem {
+  callback: () => void | Promise<void>;
+  interval: string;
+  key: string;
+}
 
 export default class Cron {
-  jobs = {};
-  heap = new MinHeap();
-  timer = null;
+  static instance: Cron | null;
+
+  jobs: Record<string, CronJob> = {};
+  heap: MinHeap<CronJob> = new MinHeap();
+  timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     if (Cron.instance) return Cron.instance;
     Cron.instance = this;
   }
 
-  scheduleNextRun() {
-    clearTimeout(this.timer);
+  scheduleNextRun(): void {
+    if (this.timer) clearTimeout(this.timer);
 
     const { heap } = this;
 
     if (heap.isEmpty()) return;
 
-    const nextJob = heap.peek();
+    const nextJob = heap.peek()!;
     const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
 
     this.timer = setTimeout(() => this.runDueJobs(), delay);
   }
 
-  async runDueJobs() {
+  async runDueJobs(): Promise<void> {
     const now = getTimestamp();
     const { heap } = this;
 
-    while (!heap.isEmpty() && heap.peek().nextTrigger <= now) {
-      const job = heap.pop();
+    while (!heap.isEmpty() && heap.peek()!.nextTrigger <= now) {
+      const job = heap.pop()!;
 
-      if (config.debug) this.log('job has been triggered', job.key);
+      if ((config as Record<string, unknown>).debug) this.log('job has been triggered', job.key);
 
       try {
         await job.callback();
@@ -64,13 +72,13 @@ export default class Cron {
     this.scheduleNextRun();
   }
 
-  register(key, callback, interval, runOnInit=false) {
-    const job = { callback, interval, key };
+  register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
+    const job: CronJob = { callback, interval, key, nextTrigger: 0 };
     this.jobs[key] = job;
     this.setNextTrigger(job);
     this.heap.push(job);
 
-    if (config.debug) {
+    if ((config as Record<string, unknown>).debug) {
       this.log(`job has been registered with interval: ${interval}`, key);
     }
 
@@ -85,27 +93,27 @@ export default class Cron {
     this.scheduleNextRun();
   }
 
-  unregister(key) {
+  unregister(key: string): void {
     const { heap, jobs } = this;
     const job = jobs[key];
-    
+
     if (!job) return;
 
     delete jobs[key];
     heap.remove(job);
 
-    if (config.debug) this.log('job has been unregistered', key);
+    if ((config as Record<string, unknown>).debug) this.log('job has been unregistered', key);
 
     this.scheduleNextRun();
   }
 
-  setNextTrigger(job) {
+  setNextTrigger(job: CronJob): void {
     job.nextTrigger = getTimestamp() + parseInt(job.interval, 10);
   }
 
-  log(text, key = null) {
-    if (!config.cron?.log) return;
-    
+  log(text: string, key: string | null = null): void {
+    if (!(config as Record<string, Record<string, unknown>>).cron?.log) return;
+
     const tag = key ? `Cron::${key}` : `Cron`;
     log.cron(`${tag} - ${text}:`);
   }

@@ -5,26 +5,56 @@
   ],
   "version": "0.2.1-beta.31",
   "description": "Cron/job scheduler for Stonyx framework",
-  "main": "src/main.js",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
   "type": "module",
   "files": [
-    "src",
+    "dist",
     "config",
     "README.md"
   ],
   "exports": {
-    ".": "./src/main.js",
-    "./service": "./src/service.js",
-    "./cron-parser": "./src/cron-parser.js",
-    "./schedule": "./src/schedule.js",
-    "./job": "./src/job.js",
-    "./normalize": "./src/normalize.js",
-    "./locked": "./src/locked.js",
-    "./run-log": "./src/run-log.js",
-    "./min-heap": "./src/min-heap.js"
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    },
+    "./service": {
+      "types": "./dist/service.d.ts",
+      "default": "./dist/service.js"
+    },
+    "./cron-parser": {
+      "types": "./dist/cron-parser.d.ts",
+      "default": "./dist/cron-parser.js"
+    },
+    "./schedule": {
+      "types": "./dist/schedule.d.ts",
+      "default": "./dist/schedule.js"
+    },
+    "./job": {
+      "types": "./dist/job.d.ts",
+      "default": "./dist/job.js"
+    },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "default": "./dist/normalize.js"
+    },
+    "./locked": {
+      "types": "./dist/locked.d.ts",
+      "default": "./dist/locked.js"
+    },
+    "./run-log": {
+      "types": "./dist/run-log.d.ts",
+      "default": "./dist/run-log.js"
+    },
+    "./min-heap": {
+      "types": "./dist/min-heap.d.ts",
+      "default": "./dist/min-heap.js"
+    }
   },
   "scripts": {
-    "test": "stonyx test",
+    "build": "tsc",
+    "build:test": "tsc -p tsconfig.test.json",
+    "test": "pnpm build && pnpm build:test && stonyx test 'dist-test/test/**/*-test.js'",
     "prepublishOnly": "npm test"
   },
   "publishConfig": {
@@ -46,8 +76,10 @@
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
     "@stonyx/utils": "0.2.3-beta.7",
+    "@types/node": "^25.5.2",
     "qunit": "^2.24.1",
-    "sinon": "^21.0.0"
+    "sinon": "^21.0.0",
+    "typescript": "^5.8.3"
   },
   "dependencies": {
     "stonyx": "0.2.3-beta.12"

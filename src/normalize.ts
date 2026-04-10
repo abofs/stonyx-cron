@@ -4,13 +4,46 @@
  * flat-param recovery, type coercion.
  */
 
+interface RawSchedule {
+  kind?: string;
+  at?: string | number;
+  atMs?: number;
+  everyMs?: string | number;
+  expr?: string;
+  tz?: string;
+}
+
+interface RawPayload {
+  kind?: string;
+  message?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+interface RawJobInput {
+  name?: string;
+  description?: string;
+  schedule?: RawSchedule;
+  payload?: RawPayload;
+  delivery?: Record<string, unknown>;
+  sessionTarget?: string;
+  wakeMode?: string;
+  enabled?: boolean;
+  deleteAfterRun?: boolean;
+  // flat param recovery
+  job?: RawJobInput;
+  message?: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
 /**
  * Normalize a schedule object. Infers kind from fields if missing.
  */
-export function normalizeSchedule(raw) {
-  if (!raw || typeof raw !== 'object') return raw;
+export function normalizeSchedule(raw: unknown): RawSchedule {
+  if (!raw || typeof raw !== 'object') return raw as RawSchedule;
 
-  const schedule = { ...raw };
+  const schedule: RawSchedule = { ...(raw as RawSchedule) };
 
   // Infer kind from fields if missing
   if (!schedule.kind) {
@@ -24,7 +57,7 @@ export function normalizeSchedule(raw) {
     schedule.kind = schedule.kind.toLowerCase();
   }
 
-  // Legacy: atMs (number) → at (ISO string)
+  // Legacy: atMs (number) -> at (ISO string)
   if (schedule.atMs && !schedule.at) {
     schedule.at = new Date(schedule.atMs).toISOString();
     delete schedule.atMs;
@@ -41,10 +74,10 @@ export function normalizeSchedule(raw) {
 /**
  * Normalize a payload object. Infers kind from fields if missing.
  */
-export function normalizePayload(raw) {
-  if (!raw || typeof raw !== 'object') return raw;
+export function normalizePayload(raw: unknown): RawPayload {
+  if (!raw || typeof raw !== 'object') return raw as RawPayload;
 
-  const payload = { ...raw };
+  const payload: RawPayload = { ...(raw as RawPayload) };
 
   // Infer kind from fields
   if (!payload.kind) {
@@ -71,15 +104,15 @@ const JOB_KEYS = new Set([
   'delivery', 'enabled', 'deleteAfterRun', 'wakeMode',
 ]);
 
-export function recoverFlatParams(params) {
+export function recoverFlatParams(params: RawJobInput): RawJobInput {
   if (params.job && typeof params.job === 'object' && Object.keys(params.job).length > 0) {
     return params.job;
   }
 
-  const synthetic = {};
+  const synthetic: RawJobInput = {};
   for (const key of Object.keys(params)) {
     if (JOB_KEYS.has(key)) {
-      synthetic[key] = params[key];
+      (synthetic as Record<string, unknown>)[key] = params[key];
     }
   }
 
@@ -106,8 +139,8 @@ export function recoverFlatParams(params) {
  * Normalize a complete job input for creation.
  * Applies all normalization: schedule, payload, defaults.
  */
-export function normalizeJobInput(raw) {
-  const job = { ...raw };
+export function normalizeJobInput(raw: RawJobInput): RawJobInput {
+  const job: RawJobInput = { ...raw };
 
   if (job.schedule) {
     job.schedule = normalizeSchedule(job.schedule);
@@ -149,8 +182,8 @@ export function normalizeJobInput(raw) {
 /**
  * Infer a job name from schedule and payload.
  */
-function inferName(job) {
-  const parts = [];
+function inferName(job: RawJobInput): string {
+  const parts: string[] = [];
 
   if (job.schedule?.kind === 'at') parts.push('One-shot');
   else if (job.schedule?.kind === 'every') parts.push('Recurring');

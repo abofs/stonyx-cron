@@ -15,12 +15,18 @@ importers:
       '@stonyx/utils':
         specifier: 0.2.3-beta.7
         version: 0.2.3-beta.7
+      '@types/node':
+        specifier: ^25.5.2
+        version: 25.5.2
       qunit:
-        specifier: ^2.25.0
+        specifier: ^2.24.1
         version: 2.25.0
       sinon:
-        specifier: ^21.0.3
+        specifier: ^21.0.0
         version: 21.0.3
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
 
 packages:
 
@@ -35,6 +41,9 @@ packages:
 
   '@stonyx/utils@0.2.3-beta.7':
     resolution: {integrity: sha512-SF6ZZZJ/f1n/+SJJDj8BJdlgvv+WDLGWGUMIkwTpruA5jv/AYJqSoVIgTpYfuMTnYDIsp3KoruaIKy/qd2ETPQ==}
+
+  '@types/node@25.5.2':
+    resolution: {integrity: sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg==}
 
   call-bind-apply-helpers@1.0.2:
     resolution: {integrity: sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==}
@@ -183,6 +192,14 @@ packages:
     resolution: {integrity: sha512-Acylog8/luQ8L7il+geoSxhEkazvkslg7PSNKOX59mbB9cOveP5aq9h74Y7YU8yDpJwetzQQrfIwtf4Wp4LKcw==}
     engines: {node: '>=4'}
 
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
   url@0.11.4:
     resolution: {integrity: sha512-oCwdVC7mTuWiPyjLUz/COz5TLk6wgp0RCsN+wHZ2Ekneac9w8uuV0njcbbie2ME+Vs+d6duwmYuR3HgQXs1fOg==}
     engines: {node: '>= 0.4'}
@@ -206,6 +223,10 @@ snapshots:
       type-detect: 4.1.0
 
   '@stonyx/utils@0.2.3-beta.7': {}
+
+  '@types/node@25.5.2':
+    dependencies:
+      undici-types: 7.18.2
 
   call-bind-apply-helpers@1.0.2:
     dependencies:
@@ -360,6 +381,10 @@ snapshots:
   type-detect@4.0.8: {}
 
   type-detect@4.1.0: {}
+
+  typescript@5.9.3: {}
+
+  undici-types@7.18.2: {}
 
   url@0.11.4:
     dependencies:
