@@ -8,15 +8,15 @@
  */
 import { nextOccurrence, validateCronExpression } from './cron-parser.js';
 
+export interface AtSchedule { kind: 'at'; at: string | number; }
+export interface EverySchedule { kind: 'every'; everyMs: number; anchorMs?: number; }
+export interface CronSchedule { kind: 'cron'; expr: string; tz?: string; }
+export type Schedule = AtSchedule | EverySchedule | CronSchedule;
+
 /**
  * Compute the next run time for a schedule.
- *
- * @param {object} schedule - Schedule definition
- * @param {string} schedule.kind - "at" | "every" | "cron"
- * @param {number} nowMs - Current time in milliseconds
- * @returns {number|undefined} Next run time in ms, or undefined if no future occurrence
  */
-export function computeNextRunAtMs(schedule, nowMs) {
+export function computeNextRunAtMs(schedule: Schedule, nowMs: number): number | undefined {
   if (schedule.kind === 'at') {
     const atMs = typeof schedule.at === 'number' ? schedule.at : Date.parse(schedule.at);
     if (!Number.isFinite(atMs)) return undefined;
@@ -41,15 +41,13 @@ export function computeNextRunAtMs(schedule, nowMs) {
     return nextOccurrence(schedule.expr.trim(), nowSecondMs, tz);
   }
 
-  throw new Error(`Unknown schedule kind: "${schedule.kind}"`);
+  throw new Error(`Unknown schedule kind: "${(schedule as Record<string, unknown>).kind}"`);
 }
 
 /**
  * Validate a schedule definition.
- * @param {object} schedule
- * @throws {Error} if the schedule is invalid
  */
-export function validateSchedule(schedule) {
+export function validateSchedule(schedule: Schedule): void {
   if (!schedule || typeof schedule !== 'object') {
     throw new Error('Schedule must be an object');
   }
@@ -77,5 +75,5 @@ export function validateSchedule(schedule) {
     return;
   }
 
-  throw new Error(`Unknown schedule kind: "${schedule.kind}"`);
+  throw new Error(`Unknown schedule kind: "${(schedule as Record<string, unknown>).kind}"`);
 }

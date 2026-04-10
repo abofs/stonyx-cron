@@ -1,26 +1,28 @@
-export default class MinHeap {
-  constructor() {
-    this.items = [];
-  }
+export interface HeapItem {
+  nextTrigger: number;
+}
 
-  push(job) {
+export default class MinHeap<T extends HeapItem> {
+  items: T[] = [];
+
+  push(job: T): void {
     this.items.push(job);
     this.bubbleUp();
   }
 
-  pop() {
+  pop(): T | undefined {
     if (this.items.length === 1) return this.items.pop();
     const top = this.items[0];
-    this.items[0] = this.items.pop();
+    this.items[0] = this.items.pop()!;
     this.bubbleDown();
     return top;
   }
 
-  peek() {
+  peek(): T | undefined {
     return this.items[0];
   }
 
-  bubbleUp() {
+  bubbleUp(): void {
     let idx = this.items.length - 1;
     while (idx > 0) {
       const parentIdx = Math.floor((idx - 1) / 2);
@@ -30,14 +32,14 @@ export default class MinHeap {
     }
   }
 
-  bubbleDown() {
+  bubbleDown(): void {
     let idx = 0;
     const length = this.items.length;
 
     while (true) {
-      let leftIdx = 2 * idx + 1;
-      let rightIdx = 2 * idx + 2;
-      let swapIdx = null;
+      const leftIdx = 2 * idx + 1;
+      const rightIdx = 2 * idx + 2;
+      let swapIdx: number | null = null;
 
       if (leftIdx < length && this.items[leftIdx].nextTrigger < this.items[idx].nextTrigger) {
         swapIdx = leftIdx;
@@ -56,10 +58,10 @@ export default class MinHeap {
     }
   }
 
-  remove(job) {
+  remove(job: T): void {
     const idx = this.items.indexOf(job);
     if (idx === -1) return;
-    const end = this.items.pop();
+    const end = this.items.pop()!;
     if (idx < this.items.length) {
       this.items[idx] = end;
       this.bubbleUp();
@@ -67,7 +69,7 @@ export default class MinHeap {
     }
   }
 
-  isEmpty() {
+  isEmpty(): boolean {
     return this.items.length === 0;
   }
 }

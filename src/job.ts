@@ -1,7 +1,7 @@
 /**
  * Job data model and state machine for the advanced scheduling system.
  */
-import { computeNextRunAtMs, validateSchedule } from './schedule.js';
+import { computeNextRunAtMs, validateSchedule, type Schedule } from './schedule.js';
 
 /**
  * Error backoff table (milliseconds).
@@ -9,34 +9,73 @@ import { computeNextRunAtMs, validateSchedule } from './schedule.js';
  */
 const ERROR_BACKOFF_MS = [30_000, 60_000, 300_000, 900_000, 3_600_000];
 
-export function errorBackoffMs(consecutiveErrors) {
+export interface JobState {
+  nextRunAtMs: number | undefined;
+  runningAtMs: number | undefined;
+  lastRunAtMs: number | undefined;
+  lastStatus: 'ok' | 'error' | 'skipped' | undefined;
+  lastError: string | undefined;
+  lastDurationMs: number | undefined;
+  consecutiveErrors: number;
+  scheduleErrorCount: number;
+}
+
+export interface Job {
+  id: string;
+  name: string;
+  description: string | undefined;
+  enabled: boolean;
+  deleteAfterRun: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+  schedule: Schedule;
+  sessionTarget: string;
+  wakeMode: string;
+  payload: Record<string, unknown>;
+  delivery: Record<string, unknown> | undefined;
+  state: JobState;
+}
+
+export interface JobInput {
+  name: string;
+  schedule: Schedule;
+  payload: Record<string, unknown>;
+  description?: string;
+  enabled?: boolean;
+  deleteAfterRun?: boolean;
+  sessionTarget?: string;
+  wakeMode?: string;
+  delivery?: Record<string, unknown>;
+}
+
+export interface JobPatch {
+  name?: string;
+  description?: string;
+  schedule?: Schedule;
+  payload?: Record<string, unknown>;
+  delivery?: Record<string, unknown> | null;
+  enabled?: boolean;
+  deleteAfterRun?: boolean;
+  sessionTarget?: string;
+  wakeMode?: string;
+}
+
+export function errorBackoffMs(consecutiveErrors: number): number {
   if (consecutiveErrors < 1) return 0;
   return ERROR_BACKOFF_MS[Math.min(consecutiveErrors - 1, ERROR_BACKOFF_MS.length - 1)];
 }
 
 /**
  * Create a new job object from input.
- *
- * @param {object} input - Job creation input
- * @param {string} input.name - Job name
- * @param {object} input.schedule - Schedule definition (at/every/cron)
- * @param {object} input.payload - What to execute
- * @param {string} [input.description]
- * @param {boolean} [input.enabled=true]
- * @param {boolean} [input.deleteAfterRun=false]
- * @param {string} [input.sessionTarget="isolated"]
- * @param {string} [input.wakeMode="now"]
- * @param {object} [input.delivery]
- * @returns {object} Complete job object with state
  */
-export function createJob(input) {
+export function createJob(input: JobInput): Job {
   validateSchedule(input.schedule);
 
   const nowMs = Date.now();
   const enabled = input.enabled !== false;
   const deleteAfterRun = input.deleteAfterRun ?? (input.schedule.kind === 'at');
 
-  const job = {
+  const job: Job = {
     id: crypto.randomUUID(),
     name: input.name,
     description: input.description || undefined,
@@ -75,12 +114,8 @@ export function createJob(input) {
 
 /**
  * Apply an update patch to a job.
- *
- * @param {object} job - Existing job
- * @param {object} patch - Fields to update
- * @returns {object} Updated job (same reference, mutated)
  */
-export function updateJob(job, patch) {
+export function updateJob(job: Job, patch: JobPatch): Job {
   const nowMs = Date.now();
 
   if (patch.name !== undefined) job.name = patch.name;
@@ -126,19 +161,14 @@ export function updateJob(job, patch) {
 /**
  * Mark a job as started (running).
  */
-export function markRunning(job) {
+export function markRunning(job: Job): void {
   job.state.runningAtMs = Date.now();
 }
 
 /**
  * Apply the result of a job execution.
- *
- * @param {object} job - The job
- * @param {"ok"|"error"|"skipped"} status - Execution result
- * @param {string} [error] - Error message if status is "error"
- * @param {number} [durationMs] - Execution duration
  */
-export function applyResult(job, status, error, durationMs) {
+export function applyResult(job: Job, status: 'ok' | 'error' | 'skipped', error?: string, durationMs?: number): void {
   const nowMs = Date.now();
 
   job.state.lastRunAtMs = job.state.runningAtMs || nowMs;
@@ -192,7 +222,7 @@ export function applyResult(job, status, error, durationMs) {
 /**
  * Check if a job is due to run.
  */
-export function isDue(job, nowMs) {
+export function isDue(job: Job, nowMs: number): boolean {
   return job.enabled
     && !job.state.runningAtMs
     && job.state.nextRunAtMs !== undefined

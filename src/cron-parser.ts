@@ -1,15 +1,28 @@
 /**
  * 5-field cron expression parser with next-occurrence computation.
- * No external dependencies — built for stonyx-cron.
+ * No external dependencies - built for stonyx-cron.
  *
  * Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-6)
  * Supports: wildcards(*), ranges(1-5), steps(* /5), lists(1,3,5), names(jan-dec, sun-sat)
  */
 
-const MONTH_NAMES = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
-const DAY_NAMES = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+interface FieldRange {
+  min: number;
+  max: number;
+}
 
-const FIELD_RANGES = [
+export interface ParsedCronExpression {
+  minutes: number[];
+  hours: number[];
+  daysOfMonth: number[];
+  months: number[];
+  daysOfWeek: number[];
+}
+
+const MONTH_NAMES: Record<string, number> = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const DAY_NAMES: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+const FIELD_RANGES: FieldRange[] = [
   { min: 0, max: 59 },  // minute
   { min: 0, max: 23 },  // hour
   { min: 1, max: 31 },  // day of month
@@ -19,27 +32,24 @@ const FIELD_RANGES = [
 
 /**
  * Parse a single cron field into a sorted array of allowed values.
- * @param {string} field - The field string (e.g., "1-5", "* /15", "mon,wed,fri")
- * @param {number} fieldIndex - Index (0=minute, 1=hour, 2=dom, 3=month, 4=dow)
- * @returns {number[]} Sorted array of allowed integer values
  */
-export function parseField(field, fieldIndex) {
+export function parseField(field: string, fieldIndex: number): number[] {
   const { min, max } = FIELD_RANGES[fieldIndex];
   const names = fieldIndex === 3 ? MONTH_NAMES : fieldIndex === 4 ? DAY_NAMES : null;
 
-  const resolveToken = (token) => {
+  const resolveToken = (token: string): number => {
     if (names) {
       const lower = token.toLowerCase();
       if (lower in names) return names[lower];
     }
     const n = Number(token);
     if (!Number.isInteger(n)) throw new Error(`Invalid cron value: "${token}" in field ${fieldIndex}`);
-    // Normalize day-of-week 7 → 0 (both mean Sunday)
+    // Normalize day-of-week 7 -> 0 (both mean Sunday)
     if (fieldIndex === 4 && n === 7) return 0;
     return n;
   };
 
-  const results = new Set();
+  const results = new Set<number>();
 
   for (const part of field.split(',')) {
     const trimmed = part.trim();
@@ -50,7 +60,7 @@ export function parseField(field, fieldIndex) {
       throw new Error(`Invalid step "${stepStr}" in cron field ${fieldIndex}`);
     }
 
-    let start, end;
+    let start: number, end: number;
 
     if (rangeStr === '*') {
       start = min;
@@ -78,10 +88,8 @@ export function parseField(field, fieldIndex) {
 
 /**
  * Parse a 5-field cron expression into field arrays.
- * @param {string} expr - Cron expression (e.g., "0 9 * * 1-5")
- * @returns {{ minutes: number[], hours: number[], daysOfMonth: number[], months: number[], daysOfWeek: number[] }}
  */
-export function parseCronExpression(expr) {
+export function parseCronExpression(expr: string): ParsedCronExpression {
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) {
     throw new Error(`Cron expression must have exactly 5 fields, got ${fields.length}: "${expr}"`);
@@ -99,36 +107,27 @@ export function parseCronExpression(expr) {
 /**
  * Get the number of days in a given month/year.
  */
-function daysInMonth(year, month) {
-  return new Date(year, month, 0).getDate();
+function daysInMonth(_year: number, month: number): number {
+  return new Date(_year, month, 0).getDate();
 }
 
 /**
  * Check if a day-of-month + day-of-week pair matches the parsed expression.
- *
- * Standard cron behavior: if BOTH dom and dow are restricted (not *),
- * then EITHER matching is sufficient (OR logic).
- * If only one is restricted, it acts as the sole filter.
  */
-function dayMatches(parsed, domWild, dowWild, dayOfMonth, dayOfWeek) {
+function dayMatches(parsed: ParsedCronExpression, domWild: boolean, dowWild: boolean, dayOfMonth: number, dayOfWeek: number): boolean {
   const domMatch = parsed.daysOfMonth.includes(dayOfMonth);
   const dowMatch = parsed.daysOfWeek.includes(dayOfWeek);
 
   if (domWild && dowWild) return true;
   if (domWild) return dowMatch;
   if (dowWild) return domMatch;
-  return domMatch || dowMatch; // Both restricted → OR
+  return domMatch || dowMatch; // Both restricted -> OR
 }
 
 /**
  * Compute the next occurrence of a cron expression after a given timestamp.
- *
- * @param {string} expr - 5-field cron expression
- * @param {number} afterMs - Timestamp in milliseconds (exclusive — finds strictly after this)
- * @param {string} [tz] - IANA timezone (defaults to system timezone)
- * @returns {number|undefined} Next occurrence in milliseconds, or undefined if none within 4 years
  */
-export function nextOccurrence(expr, afterMs, tz) {
+export function nextOccurrence(expr: string, afterMs: number, tz?: string): number | undefined {
   const parsed = parseCronExpression(expr);
   const exprFields = expr.trim().split(/\s+/);
   const domWild = exprFields[2] === '*';
@@ -147,11 +146,11 @@ export function nextOccurrence(expr, afterMs, tz) {
     weekday: 'short',
   });
 
-  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
   // Parse formatted date parts in the target timezone
-  function getLocalParts(date) {
-    const parts = {};
+  function getLocalParts(date: Date): { year: number; month: number; day: number; hour: number; minute: number; weekday: number } {
+    const parts: Record<string, string> = {};
     for (const { type, value } of formatter.formatToParts(date)) {
       parts[type] = value;
     }
@@ -165,23 +164,20 @@ export function nextOccurrence(expr, afterMs, tz) {
     };
   }
 
-  // Search limit: 4 years of minutes (≈ 2.1M iterations max)
+  // Search limit: 4 years of minutes
   const maxMs = afterMs + 4 * 365.25 * 24 * 60 * 60 * 1000;
-  let candidate = new Date(startDate);
+  const candidate = new Date(startDate);
 
   while (candidate.getTime() <= maxMs) {
     const p = getLocalParts(candidate);
 
     // Check month
     if (!parsed.months.includes(p.month)) {
-      // Advance to next matching month
       const nextMonth = parsed.months.find(m => m > p.month);
       if (nextMonth) {
-        // Stay in same year, advance to first day of nextMonth
-        candidate = advanceToMonth(candidate, p.year, nextMonth, tz, formatter, dayMap);
+        advanceToMonth(candidate, p.year, nextMonth);
       } else {
-        // Wrap to next year, first matching month
-        candidate = advanceToMonth(candidate, p.year + 1, parsed.months[0], tz, formatter, dayMap);
+        advanceToMonth(candidate, p.year + 1, parsed.months[0]);
       }
       continue;
     }
@@ -198,7 +194,6 @@ export function nextOccurrence(expr, afterMs, tz) {
       if (nextHour) {
         candidate.setMinutes(candidate.getMinutes() + ((nextHour - p.hour) * 60 - p.minute));
       } else {
-        // Advance to next day
         candidate.setMinutes(candidate.getMinutes() + ((24 - p.hour) * 60 - p.minute));
       }
       continue;
@@ -210,7 +205,6 @@ export function nextOccurrence(expr, afterMs, tz) {
       if (nextMin) {
         candidate.setMinutes(candidate.getMinutes() + (nextMin - p.minute));
       } else {
-        // Advance to next hour
         candidate.setMinutes(candidate.getMinutes() + (60 - p.minute));
       }
       continue;
@@ -224,23 +218,16 @@ export function nextOccurrence(expr, afterMs, tz) {
 }
 
 /**
- * Create a Date advanced to the start of a specific month in a specific year,
- * using the target timezone's midnight.
+ * Advance a Date to the start of a specific month in a specific year.
  */
-function advanceToMonth(current, year, month, tz, formatter, dayMap) {
-  // Create a new date at ~start of the target month in UTC, then adjust
-  const d = new Date(current);
-  // Jump to approximately the right time
-  d.setFullYear(year, month - 1, 1);
-  d.setHours(0, 0, 0, 0);
-  return d;
+function advanceToMonth(current: Date, year: number, month: number): void {
+  current.setFullYear(year, month - 1, 1);
+  current.setHours(0, 0, 0, 0);
 }
 
 /**
  * Validate a cron expression without computing next occurrence.
- * @param {string} expr - 5-field cron expression
- * @throws {Error} if the expression is invalid
  */
-export function validateCronExpression(expr) {
+export function validateCronExpression(expr: string): void {
   parseCronExpression(expr);
 }

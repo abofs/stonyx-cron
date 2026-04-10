@@ -1,14 +1,13 @@
 /**
- * CronService — the main API for advanced job scheduling.
+ * CronService - the main API for advanced job scheduling.
  *
  * Manages jobs in memory with a min-heap for efficient next-job lookup.
- * Supports pluggable store interface (memory-only by default, ORM in PR 2).
  * All state mutations are serialized via async locking.
  */
 import config from 'stonyx/config';
 import log from 'stonyx/log';
-import MinHeap from './min-heap.js';
-import { createJob, updateJob, markRunning, applyResult, isDue } from './job.js';
+import MinHeap, { type HeapItem } from './min-heap.js';
+import { createJob, updateJob, markRunning, applyResult, isDue, type Job, type JobInput, type JobPatch } from './job.js';
 import { computeNextRunAtMs } from './schedule.js';
 import { locked } from './locked.js';
 import { normalizeJobInput, recoverFlatParams } from './normalize.js';
@@ -16,25 +15,64 @@ import RunLog from './run-log.js';
 
 const MAX_TIMER_DELAY_MS = 60_000;
 
+interface HeapEntry extends HeapItem {
+  key: string;
+}
+
+interface JobDueResult {
+  status?: string;
+  error?: string;
+  summary?: string;
+}
+
+interface ExecuteResult {
+  status: string;
+  error?: string;
+  summary?: string;
+  durationMs?: number;
+  deleted?: boolean;
+  reason?: string;
+}
+
+interface ServiceStatus {
+  started: boolean;
+  jobCount: number;
+  nextWakeAtMs: number | undefined;
+}
+
+interface ListOptions {
+  includeDisabled?: boolean;
+}
+
+type OnJobDueCallback = (job: Job) => Promise<JobDueResult | void> | JobDueResult | void;
+
 export default class CronService {
+  jobs: Map<string, Job>;
+  heap: MinHeap<HeapEntry>;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+  runLog: RunLog;
+  started: boolean;
+
+  // Pluggable callbacks for consumers
+  onJobDue: OnJobDueCallback | null;
+
   constructor() {
-    this.jobs = new Map();       // id → job
-    this.heap = new MinHeap();   // ordered by nextRunAtMs
+    this.jobs = new Map();
+    this.heap = new MinHeap();
     this.timer = null;
     this.running = false;
     this.runLog = new RunLog();
     this.started = false;
-
-    // Pluggable callbacks for consumers
-    this.onJobDue = null;        // async (job) => { status, error?, summary? }
+    this.onJobDue = null;
   }
 
-  // ── Lifecycle ──────────────────────────────────────────────
+  // -- Lifecycle -------------------------------------------------------
 
   /**
    * Start the service. Loads jobs from store (if any), arms timer.
    */
-  async start(initialJobs) {
+  async start(initialJobs?: Job[]): Promise<void> {
     if (this.started) return;
     this.started = true;
 
@@ -53,18 +91,18 @@ export default class CronService {
   /**
    * Stop the service. Clears timer.
    */
-  stop() {
+  stop(): void {
     this.started = false;
-    clearTimeout(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
 
-  // ── CRUD ───────────────────────────────────────────────────
+  // -- CRUD ------------------------------------------------------------
 
   /**
    * Get service status.
    */
-  status() {
+  status(): ServiceStatus {
     const peek = this.heap.peek();
     return {
       started: this.started,
@@ -76,7 +114,7 @@ export default class CronService {
   /**
    * List jobs, optionally including disabled ones.
    */
-  list(opts) {
+  list(opts?: ListOptions): Job[] {
     const includeDisabled = opts?.includeDisabled ?? false;
     const jobs = [...this.jobs.values()];
     const filtered = includeDisabled ? jobs : jobs.filter(j => j.enabled);
@@ -86,16 +124,16 @@ export default class CronService {
   /**
    * Get a single job by ID.
    */
-  get(id) {
+  get(id: string): Job | null {
     return this.jobs.get(id) || null;
   }
 
   /**
    * Add a new job. Input is normalized for AI compatibility.
    */
-  async add(rawInput) {
+  async add(rawInput: Record<string, unknown>): Promise<Job> {
     return locked(() => {
-      const input = normalizeJobInput(recoverFlatParams(rawInput));
+      const input = normalizeJobInput(recoverFlatParams(rawInput as Record<string, unknown>)) as unknown as JobInput;
       const job = createJob(input);
       this.jobs.set(job.id, job);
 
@@ -111,7 +149,7 @@ export default class CronService {
   /**
    * Update an existing job.
    */
-  async update(id, patch) {
+  async update(id: string, patch: JobPatch): Promise<Job> {
     return locked(() => {
       const job = this.jobs.get(id);
       if (!job) throw new Error(`Job not found: ${id}`);
@@ -136,7 +174,7 @@ export default class CronService {
   /**
    * Remove a job.
    */
-  async remove(id) {
+  async remove(id: string): Promise<void> {
     return locked(() => {
       const job = this.jobs.get(id);
       if (!job) throw new Error(`Job not found: ${id}`);
@@ -150,11 +188,8 @@ export default class CronService {
 
   /**
    * Manually trigger a job.
-   *
-   * @param {string} id - Job ID
-   * @param {"due"|"force"} [mode="force"] - "due" only runs if the job is due, "force" runs regardless
    */
-  async run(id, mode = 'force') {
+  async run(id: string, mode: 'due' | 'force' = 'force'): Promise<ExecuteResult> {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`Job not found: ${id}`);
 
@@ -168,14 +203,14 @@ export default class CronService {
   /**
    * Get run history for a job.
    */
-  runs(id, limit) {
+  runs(id: string, limit?: number): ReturnType<RunLog['get']> {
     return this.runLog.get(id, limit);
   }
 
-  // ── Timer Engine ──────────────────────────────────────��────
+  // -- Timer Engine ----------------------------------------------------
 
-  armTimer() {
-    clearTimeout(this.timer);
+  armTimer(): void {
+    if (this.timer) clearTimeout(this.timer);
     if (!this.started) return;
 
     const peek = this.heap.peek();
@@ -185,9 +220,9 @@ export default class CronService {
     this.timer = setTimeout(() => this.onTimer(), delay);
   }
 
-  async onTimer() {
+  async onTimer(): Promise<void> {
     if (this.running) {
-      // Already processing — re-arm at max delay to prevent scheduler death
+      // Already processing - re-arm at max delay to prevent scheduler death
       this.timer = setTimeout(() => this.onTimer(), MAX_TIMER_DELAY_MS);
       return;
     }
@@ -213,11 +248,11 @@ export default class CronService {
     }
   }
 
-  findDueJobs(nowMs) {
-    const due = [];
+  findDueJobs(nowMs: number): Job[] {
+    const due: Job[] = [];
 
     while (!this.heap.isEmpty()) {
-      const peek = this.heap.peek();
+      const peek = this.heap.peek()!;
       if (peek.nextTrigger > nowMs) break;
 
       this.heap.pop();
@@ -230,11 +265,11 @@ export default class CronService {
     return due;
   }
 
-  async executeJob(job) {
+  async executeJob(job: Job): Promise<ExecuteResult> {
     const startMs = Date.now();
-    let status = 'ok';
-    let error;
-    let summary;
+    let status: string = 'ok';
+    let error: string | undefined;
+    let summary: string | undefined;
 
     try {
       if (this.onJobDue) {
@@ -245,15 +280,15 @@ export default class CronService {
           summary = result.summary;
         }
       }
-    } catch (err) {
+    } catch (err: unknown) {
       status = 'error';
-      error = err?.message || String(err);
+      error = (err as Error)?.message || String(err);
       this.log(`Job "${job.name}" (${job.id}) failed: ${error}`);
     }
 
     const durationMs = Date.now() - startMs;
 
-    applyResult(job, status, error, durationMs);
+    applyResult(job, status as 'ok' | 'error' | 'skipped', error, durationMs);
 
     // Log the run
     this.runLog.record({
@@ -281,14 +316,14 @@ export default class CronService {
     return { status, error, summary, durationMs };
   }
 
-  // ── Helpers ────────────────────────────────────────────────
+  // -- Helpers ---------------------------------------------------------
 
-  removeFromHeap(id) {
+  removeFromHeap(id: string): void {
     // MinHeap doesn't support remove-by-key efficiently,
     // so we rebuild. Fine for typical job counts (< 1000).
-    const remaining = [];
+    const remaining: HeapEntry[] = [];
     while (!this.heap.isEmpty()) {
-      const item = this.heap.pop();
+      const item = this.heap.pop()!;
       if (item.key !== id) remaining.push(item);
     }
     for (const item of remaining) {
@@ -296,8 +331,8 @@ export default class CronService {
     }
   }
 
-  log(message) {
-    if (!config.cron?.log) return;
+  log(message: string): void {
+    if (!(config as Record<string, Record<string, unknown>>).cron?.log) return;
     log.cron(`Cron — ${message}`);
   }
 }
