@@ -252,8 +252,8 @@ export default class CronService {
     const due: Job[] = [];
 
     while (!this.heap.isEmpty()) {
-      const peek = this.heap.peek()!;
-      if (peek.nextTrigger > nowMs) break;
+      const peek = this.heap.peek();
+      if (!peek || peek.nextTrigger > nowMs) break;
 
       this.heap.pop();
       const job = this.jobs.get(peek.key);
@@ -282,13 +282,14 @@ export default class CronService {
       }
     } catch (err: unknown) {
       status = 'error';
-      error = (err as Error)?.message || String(err);
+      error = err instanceof Error ? err.message : String(err);
       this.log(`Job "${job.name}" (${job.id}) failed: ${error}`);
     }
 
     const durationMs = Date.now() - startMs;
 
-    applyResult(job, status as 'ok' | 'error' | 'skipped', error, durationMs);
+    const validStatus = (status === 'ok' || status === 'error' || status === 'skipped') ? status : 'error';
+    applyResult(job, validStatus, error, durationMs);
 
     // Log the run
     this.runLog.record({
@@ -323,7 +324,8 @@ export default class CronService {
     // so we rebuild. Fine for typical job counts (< 1000).
     const remaining: HeapEntry[] = [];
     while (!this.heap.isEmpty()) {
-      const item = this.heap.pop()!;
+      const item = this.heap.pop();
+      if (!item) break;
       if (item.key !== id) remaining.push(item);
     }
     for (const item of remaining) {
@@ -332,7 +334,7 @@ export default class CronService {
   }
 
   log(message: string): void {
-    if (!(config as Record<string, Record<string, unknown>>).cron?.log) return;
+    if (!config.cron?.log) return;
     log.cron(`Cron — ${message}`);
   }
 }

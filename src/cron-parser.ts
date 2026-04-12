@@ -154,12 +154,13 @@ export function nextOccurrence(expr: string, afterMs: number, tz?: string): numb
     for (const { type, value } of formatter.formatToParts(date)) {
       parts[type] = value;
     }
+    const hourStr = parts.hour ?? '0';
     return {
-      year: Number(parts.year),
-      month: Number(parts.month),
-      day: Number(parts.day),
-      hour: Number(parts.hour === '24' ? 0 : parts.hour),
-      minute: Number(parts.minute),
+      year: Number(parts.year ?? '0'),
+      month: Number(parts.month ?? '0'),
+      day: Number(parts.day ?? '0'),
+      hour: Number(hourStr === '24' ? '0' : hourStr),
+      minute: Number(parts.minute ?? '0'),
       weekday: dayMap[parts.weekday] ?? 0,
     };
   }
