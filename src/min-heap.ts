@@ -11,9 +11,11 @@ export default class MinHeap<T extends HeapItem> {
   }
 
   pop(): T | undefined {
-    if (this.items.length === 1) return this.items.pop();
+    if (this.items.length <= 1) return this.items.pop();
     const top = this.items[0];
-    this.items[0] = this.items.pop()!;
+    const last = this.items.pop();
+    if (last === undefined) return top;
+    this.items[0] = last;
     this.bubbleDown();
     return top;
   }
@@ -61,7 +63,8 @@ export default class MinHeap<T extends HeapItem> {
   remove(job: T): void {
     const idx = this.items.indexOf(job);
     if (idx === -1) return;
-    const end = this.items.pop()!;
+    const end = this.items.pop();
+    if (end === undefined) return;
     if (idx < this.items.length) {
       this.items[idx] = end;
       this.bubbleUp();

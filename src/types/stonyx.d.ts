@@ -1,5 +1,13 @@
 declare module 'stonyx/config' {
-  const config: Record<string, unknown>;
+  interface CronConfig {
+    log?: boolean;
+  }
+  interface Config {
+    cron?: CronConfig;
+    debug?: boolean;
+    [key: string]: unknown;
+  }
+  const config: Config;
   export default config;
 }
 

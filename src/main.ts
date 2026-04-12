@@ -44,7 +44,8 @@ export default class Cron {
 
     if (heap.isEmpty()) return;
 
-    const nextJob = heap.peek()!;
+    const nextJob = heap.peek();
+    if (!nextJob) return;
     const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
 
     this.timer = setTimeout(() => this.runDueJobs(), delay);
@@ -54,10 +55,12 @@ export default class Cron {
     const now = getTimestamp();
     const { heap } = this;
 
-    while (!heap.isEmpty() && heap.peek()!.nextTrigger <= now) {
-      const job = heap.pop()!;
+    while (!heap.isEmpty()) {
+      const next = heap.peek();
+      if (!next || next.nextTrigger > now) break;
+      const job = heap.pop() as CronJob;
 
-      if ((config as Record<string, unknown>).debug) this.log('job has been triggered', job.key);
+      if (config.debug) this.log('job has been triggered', job.key);
 
       try {
         await job.callback();
@@ -78,7 +81,7 @@ export default class Cron {
     this.setNextTrigger(job);
     this.heap.push(job);
 
-    if ((config as Record<string, unknown>).debug) {
+    if (config.debug) {
       this.log(`job has been registered with interval: ${interval}`, key);
     }
 
@@ -102,7 +105,7 @@ export default class Cron {
     delete jobs[key];
     heap.remove(job);
 
-    if ((config as Record<string, unknown>).debug) this.log('job has been unregistered', key);
+    if (config.debug) this.log('job has been unregistered', key);
 
     this.scheduleNextRun();
   }
@@ -112,7 +115,7 @@ export default class Cron {
   }
 
   log(text: string, key: string | null = null): void {
-    if (!(config as Record<string, Record<string, unknown>>).cron?.log) return;
+    if (!config.cron?.log) return;
 
     const tag = key ? `Cron::${key}` : `Cron`;
     log.cron(`${tag} - ${text}:`);

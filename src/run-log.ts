@@ -54,7 +54,8 @@ export default class RunLog {
       this.entries.set(entry.jobId, []);
     }
 
-    const logs = this.entries.get(entry.jobId)!;
+    const logs = this.entries.get(entry.jobId);
+    if (!logs) return;
     logs.push(log);
 
     // Auto-prune
