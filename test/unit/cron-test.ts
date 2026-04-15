@@ -1,5 +1,5 @@
 import QUnit from 'qunit';
-import sinon from 'sinon';
+import sinon, { type SinonFakeTimers } from 'sinon';
 import Cron from '@stonyx/cron';
 import config from 'stonyx/config';
 import log from 'stonyx/log';
@@ -10,7 +10,8 @@ const { module, test } = QUnit;
 module('[Unit] Cron', function (hooks) {
   setupIntegrationTests(hooks);
 
-  let cron, clock;
+  let cron: Cron;
+  let clock: SinonFakeTimers;
 
   hooks.beforeEach(function () {
     // Use fake timers
@@ -24,7 +25,7 @@ module('[Unit] Cron', function (hooks) {
 
   test('register schedules job and runs it when due', async function (assert) {
     const cb = sinon.spy();
-    cron.register('job1', cb, 5); // interval 5s
+    cron.register('job1', cb, '5'); // interval 5s
 
     // Advance just before due
     clock.tick(4900);
@@ -39,13 +40,13 @@ module('[Unit] Cron', function (hooks) {
 
   test('register with runOnInit runs immediately', function (assert) {
     const cb = sinon.spy();
-    cron.register('job2', cb, 5, true);
+    cron.register('job2', cb, '5', true);
     assert.ok(cb.calledOnce, 'Callback ran immediately when runOnInit is true');
   });
 
   test('unregister stops job from running', function (assert) {
     const cb = sinon.spy();
-    cron.register('job3', cb, 5);
+    cron.register('job3', cb, '5');
     cron.unregister('job3');
 
     // Advance beyond interval
@@ -55,7 +56,7 @@ module('[Unit] Cron', function (hooks) {
 
   test('job reschedules after running', async function (assert) {
     const cb = sinon.spy();
-    cron.register('job4', cb, 5);
+    cron.register('job4', cb, '5');
 
     // Trigger first run
     clock.tick(5000);
@@ -85,7 +86,7 @@ module('[Unit] Cron', function (hooks) {
     const cb = sinon.stub().rejects(error);
     const stub = sinon.spy(log, 'error');
 
-    cron.register('jobErr', cb, 1);
+    cron.register('jobErr', cb, '1');
 
     // Advance 1s
     clock.tick(1000);

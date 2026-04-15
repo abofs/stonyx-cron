@@ -54,7 +54,7 @@
   "scripts": {
     "build": "tsc",
     "build:test": "tsc -p tsconfig.test.json",
-    "test": "pnpm build && pnpm build:test && stonyx test 'dist-test/test/**/*-test.js'",
+    "test": "pnpm build && node --import tsx node_modules/.bin/qunit 'test/**/*-test.ts'",
     "prepublishOnly": "npm test"
   },
   "publishConfig": {
@@ -77,8 +77,11 @@
   "devDependencies": {
     "@stonyx/utils": "0.2.3-beta.7",
     "@types/node": "^25.5.2",
+    "@types/qunit": "^2.19.13",
+    "@types/sinon": "^21.0.1",
     "qunit": "^2.24.1",
     "sinon": "^21.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.8.3"
   },
   "dependencies": {

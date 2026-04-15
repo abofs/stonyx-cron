@@ -70,15 +70,15 @@ module('normalize | recoverFlatParams', function () {
   test('wraps bare message into payload', function (assert) {
     const input = { name: 'test', schedule: { kind: 'every', everyMs: 5000 }, message: 'do things' };
     const result = recoverFlatParams(input);
-    assert.strictEqual(result.payload.kind, 'agentTurn');
-    assert.strictEqual(result.payload.message, 'do things');
+    assert.strictEqual(result.payload?.kind, 'agentTurn');
+    assert.strictEqual(result.payload?.message, 'do things');
   });
 
   test('wraps bare text into payload', function (assert) {
     const input = { schedule: { kind: 'at', at: '2026-01-01' }, text: 'wake up' };
     const result = recoverFlatParams(input);
-    assert.strictEqual(result.payload.kind, 'systemEvent');
-    assert.strictEqual(result.payload.text, 'wake up');
+    assert.strictEqual(result.payload?.kind, 'systemEvent');
+    assert.strictEqual(result.payload?.text, 'wake up');
   });
 });
 

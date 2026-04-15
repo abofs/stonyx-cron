@@ -1,12 +1,13 @@
 import QUnit from 'qunit';
 const { module, test } = QUnit;
 import { createJob, updateJob, markRunning, applyResult, isDue, errorBackoffMs } from '../../src/job.js';
+import type { EverySchedule } from '../../src/schedule.js';
 
-function makeSchedule() {
+function makeSchedule(): EverySchedule {
   return { kind: 'every', everyMs: 60_000 };
 }
 
-function makePayload() {
+function makePayload(): Record<string, unknown> {
   return { kind: 'agentTurn', message: 'test' };
 }
 
@@ -96,7 +97,7 @@ module('job | applyResult', function () {
     markRunning(job);
     applyResult(job, 'error', 'fail');
     // nextRunAtMs should be at least 30s from now (first backoff)
-    assert.ok(job.state.nextRunAtMs >= Date.now() + 25_000);
+    assert.ok(job.state.nextRunAtMs! >= Date.now() + 25_000);
   });
 
   test('one-shot disables after any terminal status', function (assert) {

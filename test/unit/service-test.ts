@@ -1,5 +1,5 @@
 import QUnit from 'qunit';
-import sinon from 'sinon';
+import sinon, { type SinonFakeTimers } from 'sinon';
 import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
 import { resetLock } from '../../src/locked.js';
@@ -8,8 +8,8 @@ const { module, test } = QUnit;
 
 module('CronService', function (hooks) {
   setupIntegrationTests(hooks);
-  let service;
-  let clock;
+  let service: CronService;
+  let clock: SinonFakeTimers;
 
   hooks.beforeEach(function () {
     clock = sinon.useFakeTimers({ shouldAdvanceTime: false, now: new Date('2026-06-15T12:00:00Z') });
@@ -117,8 +117,8 @@ module('CronService', function (hooks) {
       try {
         await service.update('fake-id', { name: 'nope' });
         assert.ok(false, 'should throw');
-      } catch (err) {
-        assert.ok(err.message.includes('not found'));
+      } catch (err: unknown) {
+        assert.ok((err as Error).message.includes('not found'));
       }
     });
 
@@ -140,15 +140,15 @@ module('CronService', function (hooks) {
       try {
         await service.remove('fake-id');
         assert.ok(false, 'should throw');
-      } catch (err) {
-        assert.ok(err.message.includes('not found'));
+      } catch (err: unknown) {
+        assert.ok((err as Error).message.includes('not found'));
       }
     });
   });
 
   module('execution', function () {
     test('timer fires and executes due job', async function (assert) {
-      const executed = [];
+      const executed: string[] = [];
       service.onJobDue = (job) => {
         executed.push(job.name);
         return { status: 'ok', summary: 'done' };
@@ -204,8 +204,8 @@ module('CronService', function (hooks) {
       try {
         await service.run('fake');
         assert.ok(false, 'should throw');
-      } catch (err) {
-        assert.ok(err.message.includes('not found'));
+      } catch (err: unknown) {
+        assert.ok((err as Error).message.includes('not found'));
       }
     });
 
@@ -221,7 +221,7 @@ module('CronService', function (hooks) {
 
       const result = await service.run(job.id);
       assert.strictEqual(result.status, 'error');
-      assert.ok(result.error.includes('kaboom'));
+      assert.ok(result.error?.includes('kaboom'));
     });
 
     test('one-shot job is deleted after successful run with deleteAfterRun', async function (assert) {

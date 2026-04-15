@@ -3,7 +3,7 @@ declare module 'stonyx/config' {
     log?: boolean;
   }
   interface Config {
-    cron?: CronConfig;
+    cron: CronConfig;
     debug?: boolean;
     [key: string]: unknown;
   }
@@ -19,4 +19,14 @@ declare module 'stonyx/log' {
   }
   const log: Log;
   export default log;
+}
+
+declare module 'stonyx/test-helpers' {
+  interface Hooks {
+    before(fn: () => void | Promise<void>): void;
+    beforeEach(fn: () => void | Promise<void>): void;
+    afterEach(fn: () => void | Promise<void>): void;
+    after(fn: () => void | Promise<void>): void;
+  }
+  export function setupIntegrationTests(hooks: Hooks): void;
 }

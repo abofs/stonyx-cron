@@ -5,7 +5,7 @@
  * AI input normalization, error backoff, one-shot semantics, and run history.
  */
 import QUnit from 'qunit';
-import sinon from 'sinon';
+import sinon, { type SinonFakeTimers } from 'sinon';
 import CronService from '../../src/service.js';
 import { normalizeJobInput, recoverFlatParams } from '../../src/normalize.js';
 import { resetLock } from '../../src/locked.js';
@@ -14,8 +14,8 @@ import { definitions } from '../sample/payload.js';
 const { module, test } = QUnit;
 
 module('[Integration] Advanced Scheduling', function (hooks) {
-  let service;
-  let clock;
+  let service: CronService;
+  let clock: SinonFakeTimers;
 
   hooks.beforeEach(function () {
     clock = sinon.useFakeTimers({ shouldAdvanceTime: false, now: new Date('2026-06-15T12:00:00Z') });
@@ -131,7 +131,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
   module('execution', function () {
     test('timer fires due job', async function (assert) {
-      const executed = [];
+      const executed: string[] = [];
       service.onJobDue = (job) => {
         executed.push(job.name);
         return { status: 'ok', summary: 'done' };
