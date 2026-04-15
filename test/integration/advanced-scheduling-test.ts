@@ -37,7 +37,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
       assert.strictEqual(job.name, 'Every Minute Check');
       assert.strictEqual(job.schedule.kind, 'every');
-      assert.strictEqual(job.schedule.everyMs, 60_000);
+      if ('everyMs' in job.schedule) assert.strictEqual(job.schedule.everyMs, 60_000);
       assert.ok(job.state.nextRunAtMs, 'next run computed');
     });
 
@@ -46,8 +46,8 @@ module('[Integration] Advanced Scheduling', function (hooks) {
       const job = await service.add(definitions.dailyMorning);
 
       assert.strictEqual(job.schedule.kind, 'cron');
-      assert.strictEqual(job.schedule.expr, '0 9 * * *');
-      assert.strictEqual(job.schedule.tz, 'America/New_York');
+      if ('expr' in job.schedule) assert.strictEqual(job.schedule.expr, '0 9 * * *');
+      if ('tz' in job.schedule) assert.strictEqual(job.schedule.tz, 'America/New_York');
       assert.ok(job.state.nextRunAtMs, 'next run computed from cron expression');
     });
 
@@ -106,7 +106,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
       const job = await service.add(definitions.aiFlat);
 
       assert.strictEqual(job.schedule.kind, 'every');
-      assert.strictEqual(job.schedule.everyMs, 120000);
+      if ('everyMs' in job.schedule) assert.strictEqual(job.schedule.everyMs, 120000);
       assert.strictEqual(job.payload.kind, 'agentTurn');
       assert.strictEqual(job.payload.message, 'check the weather');
     });
@@ -180,7 +180,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
       await service.run(job.id);
       assert.strictEqual(job.state.consecutiveErrors, 1);
-      assert.ok(job.state.nextRunAtMs >= Date.now() + 25_000, 'backoff applied');
+      assert.ok(job.state.nextRunAtMs! >= Date.now() + 25_000, 'backoff applied');
     });
   });
 

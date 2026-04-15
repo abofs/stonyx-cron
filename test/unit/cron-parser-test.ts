@@ -82,7 +82,7 @@ module('cron-parser | nextOccurrence', function () {
     const now = new Date('2026-01-15T10:30:00Z').getTime();
     const next = nextOccurrence('* * * * *', now, 'UTC');
     // Should be 10:31
-    assert.strictEqual(new Date(next).toISOString(), '2026-01-15T10:31:00.000Z');
+    assert.strictEqual(new Date(next!).toISOString(), '2026-01-15T10:31:00.000Z');
   });
 
   test('finds next occurrence for 0 9 * * *', function (assert) {
@@ -90,7 +90,7 @@ module('cron-parser | nextOccurrence', function () {
     const now = new Date('2026-01-15T10:00:00Z').getTime();
     const next = nextOccurrence('0 9 * * *', now, 'UTC');
     // Should be next day at 9:00
-    assert.strictEqual(new Date(next).toISOString(), '2026-01-16T09:00:00.000Z');
+    assert.strictEqual(new Date(next!).toISOString(), '2026-01-16T09:00:00.000Z');
   });
 
   test('finds next occurrence for 0 9 * * 1 (Mondays)', function (assert) {
@@ -98,14 +98,14 @@ module('cron-parser | nextOccurrence', function () {
     const now = new Date('2026-01-15T10:00:00Z').getTime();
     const next = nextOccurrence('0 9 * * 1', now, 'UTC');
     // Next Monday is Jan 19
-    assert.strictEqual(new Date(next).toISOString(), '2026-01-19T09:00:00.000Z');
+    assert.strictEqual(new Date(next!).toISOString(), '2026-01-19T09:00:00.000Z');
   });
 
   test('handles */15 minutes', function (assert) {
     const now = new Date('2026-01-15T10:07:00Z').getTime();
     const next = nextOccurrence('*/15 * * * *', now, 'UTC');
     // Next quarter-hour is 10:15
-    assert.strictEqual(new Date(next).toISOString(), '2026-01-15T10:15:00.000Z');
+    assert.strictEqual(new Date(next!).toISOString(), '2026-01-15T10:15:00.000Z');
   });
 
   test('handles month rollover', function (assert) {
@@ -113,7 +113,7 @@ module('cron-parser | nextOccurrence', function () {
     const now = new Date('2026-12-31T23:59:00Z').getTime();
     const next = nextOccurrence('0 0 1 * *', now, 'UTC');
     // Should be Jan 1, 2027
-    assert.strictEqual(new Date(next).toISOString(), '2027-01-01T00:00:00.000Z');
+    assert.strictEqual(new Date(next!).toISOString(), '2027-01-01T00:00:00.000Z');
   });
 
   test('returns undefined for impossible expression (unreachable within 4 years)', function (assert) {

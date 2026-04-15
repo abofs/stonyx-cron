@@ -52,7 +52,7 @@ module('schedule | computeNextRunAtMs', function () {
     test('enforces minimum everyMs of 1', function (assert) {
       const now = Date.now();
       const result = computeNextRunAtMs({ kind: 'every', everyMs: 0 }, now);
-      assert.ok(result > now);
+      assert.ok(result! > now);
     });
   });
 

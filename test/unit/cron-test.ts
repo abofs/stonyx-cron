@@ -92,6 +92,6 @@ module('[Unit] Cron', function (hooks) {
     clock.tick(1000);
     await clock.tickAsync(0);
 
-    assert.ok(stub.calledWithMatch(/Cron job "jobErr" failed:/), 'Error logged');
+    assert.ok(stub.calledWithMatch(sinon.match(/Cron job "jobErr" failed:/)), 'Error logged');
   });
 });

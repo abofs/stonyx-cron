@@ -55,7 +55,7 @@ module('[Unit] MinHeap', function () {
 
     heap.remove(job2);
     assert.notStrictEqual(heap.peek(), job2, 'Removed job is no longer in heap');
-    assert.ok([job1, job3].includes(heap.peek()), 'Heap still has remaining jobs');
+    assert.ok([job1, job3].includes(heap.peek()!), 'Heap still has remaining jobs');
   });
 
   test('pop should work correctly when only one item is in heap', function (assert) {
