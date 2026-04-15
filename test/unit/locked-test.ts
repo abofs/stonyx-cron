@@ -13,7 +13,7 @@ module('locked', function (hooks) {
   });
 
   test('serializes concurrent calls', async function (assert) {
-    const order = [];
+    const order: string[] = [];
 
     const p1 = locked(async () => {
       order.push('a-start');

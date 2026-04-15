@@ -6,15 +6,15 @@
  * every N seconds" use this API directly.
  */
 import QUnit from 'qunit';
-import sinon from 'sinon';
+import sinon, { type SinonFakeTimers } from 'sinon';
 import Cron from '../../src/main.js';
 import { definitions } from '../sample/payload.js';
 
 const { module, test } = QUnit;
 
 module('[Integration] Legacy Cron', function (hooks) {
-  let cron;
-  let clock;
+  let cron: Cron;
+  let clock: SinonFakeTimers;
 
   hooks.beforeEach(function () {
     Cron.instance = null;
@@ -24,7 +24,7 @@ module('[Integration] Legacy Cron', function (hooks) {
 
   hooks.afterEach(function () {
     Object.keys(cron.jobs).forEach(key => cron.unregister(key));
-    clearTimeout(cron.timer);
+    if (cron.timer) clearTimeout(cron.timer);
     clock.restore();
     Cron.instance = null;
   });
@@ -34,10 +34,10 @@ module('[Integration] Legacy Cron', function (hooks) {
       const { key, interval } = definitions.legacyBackup;
       const callback = sinon.stub();
 
-      cron.register(key, callback, interval);
+      cron.register(key, callback, String(interval));
 
       assert.ok(cron.jobs[key], 'job registered');
-      assert.strictEqual(cron.jobs[key].interval, interval);
+      assert.strictEqual(cron.jobs[key].interval, String(interval));
       assert.ok(cron.timer, 'timer armed');
     });
 
@@ -45,14 +45,14 @@ module('[Integration] Legacy Cron', function (hooks) {
       const { key, interval } = definitions.legacyHealthCheck;
       const callback = sinon.stub();
 
-      cron.register(key, callback, interval, true);
+      cron.register(key, callback, String(interval), true);
 
       assert.ok(callback.calledOnce, 'callback invoked on init');
     });
 
     test('unregister removes job and reschedules', function (assert) {
       const callback = sinon.stub();
-      cron.register('temp', callback, 600);
+      cron.register('temp', callback, '600');
 
       assert.ok(cron.jobs['temp']);
       cron.unregister('temp');
@@ -68,7 +68,7 @@ module('[Integration] Legacy Cron', function (hooks) {
   module('execution', function () {
     test('callback fires when due', async function (assert) {
       const callback = sinon.stub();
-      cron.register('tick', callback, 10);
+      cron.register('tick', callback, '10');
 
       await clock.tickAsync(11_000);
 
@@ -77,7 +77,7 @@ module('[Integration] Legacy Cron', function (hooks) {
 
     test('callback reschedules after firing', async function (assert) {
       const callback = sinon.stub();
-      cron.register('repeat', callback, 5);
+      cron.register('repeat', callback, '5');
 
       await clock.tickAsync(6_000);
       assert.ok(callback.calledOnce);
@@ -88,7 +88,7 @@ module('[Integration] Legacy Cron', function (hooks) {
 
     test('error in callback is caught', async function (assert) {
       const callback = sinon.stub().throws(new Error('boom'));
-      cron.register('bad', callback, 5);
+      cron.register('bad', callback, '5');
 
       await clock.tickAsync(6_000);
       assert.ok(callback.calledOnce, 'callback attempted');

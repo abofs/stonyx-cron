@@ -1,6 +1,6 @@
 import QUnit from 'qunit';
 const { module, test } = QUnit;
-import { computeNextRunAtMs, validateSchedule } from '../../src/schedule.js';
+import { computeNextRunAtMs, validateSchedule, type Schedule } from '../../src/schedule.js';
 
 module('schedule | computeNextRunAtMs', function () {
   module('kind: at', function () {
@@ -52,7 +52,7 @@ module('schedule | computeNextRunAtMs', function () {
     test('enforces minimum everyMs of 1', function (assert) {
       const now = Date.now();
       const result = computeNextRunAtMs({ kind: 'every', everyMs: 0 }, now);
-      assert.ok(result > now);
+      assert.ok(result! > now);
     });
   });
 
@@ -60,12 +60,12 @@ module('schedule | computeNextRunAtMs', function () {
     test('delegates to cron parser', function (assert) {
       const now = new Date('2026-01-15T10:30:00Z').getTime();
       const result = computeNextRunAtMs({ kind: 'cron', expr: '* * * * *', tz: 'UTC' }, now);
-      assert.strictEqual(new Date(result).toISOString(), '2026-01-15T10:31:00.000Z');
+      assert.strictEqual(new Date(result!).toISOString(), '2026-01-15T10:31:00.000Z');
     });
   });
 
   test('throws on unknown kind', function (assert) {
-    assert.throws(() => computeNextRunAtMs({ kind: 'unknown' }, Date.now()), /Unknown schedule kind/);
+    assert.throws(() => computeNextRunAtMs({ kind: 'unknown' } as unknown as Schedule, Date.now()), /Unknown schedule kind/);
   });
 });
 
@@ -86,7 +86,7 @@ module('schedule | validateSchedule', function () {
   });
 
   test('throws on missing schedule', function (assert) {
-    assert.throws(() => validateSchedule(null), /must be an object/);
+    assert.throws(() => validateSchedule(null as unknown as Schedule), /must be an object/);
   });
 
   test('throws on invalid at timestamp', function (assert) {
@@ -102,6 +102,6 @@ module('schedule | validateSchedule', function () {
   });
 
   test('throws on unknown kind', function (assert) {
-    assert.throws(() => validateSchedule({ kind: 'banana' }), /Unknown schedule kind/);
+    assert.throws(() => validateSchedule({ kind: 'banana' } as unknown as Schedule), /Unknown schedule kind/);
   });
 });

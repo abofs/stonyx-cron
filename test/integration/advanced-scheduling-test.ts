@@ -5,7 +5,7 @@
  * AI input normalization, error backoff, one-shot semantics, and run history.
  */
 import QUnit from 'qunit';
-import sinon from 'sinon';
+import sinon, { type SinonFakeTimers } from 'sinon';
 import CronService from '../../src/service.js';
 import { normalizeJobInput, recoverFlatParams } from '../../src/normalize.js';
 import { resetLock } from '../../src/locked.js';
@@ -14,8 +14,8 @@ import { definitions } from '../sample/payload.js';
 const { module, test } = QUnit;
 
 module('[Integration] Advanced Scheduling', function (hooks) {
-  let service;
-  let clock;
+  let service: CronService;
+  let clock: SinonFakeTimers;
 
   hooks.beforeEach(function () {
     clock = sinon.useFakeTimers({ shouldAdvanceTime: false, now: new Date('2026-06-15T12:00:00Z') });
@@ -37,7 +37,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
       assert.strictEqual(job.name, 'Every Minute Check');
       assert.strictEqual(job.schedule.kind, 'every');
-      assert.strictEqual(job.schedule.everyMs, 60_000);
+      if ('everyMs' in job.schedule) assert.strictEqual(job.schedule.everyMs, 60_000);
       assert.ok(job.state.nextRunAtMs, 'next run computed');
     });
 
@@ -46,8 +46,8 @@ module('[Integration] Advanced Scheduling', function (hooks) {
       const job = await service.add(definitions.dailyMorning);
 
       assert.strictEqual(job.schedule.kind, 'cron');
-      assert.strictEqual(job.schedule.expr, '0 9 * * *');
-      assert.strictEqual(job.schedule.tz, 'America/New_York');
+      if ('expr' in job.schedule) assert.strictEqual(job.schedule.expr, '0 9 * * *');
+      if ('tz' in job.schedule) assert.strictEqual(job.schedule.tz, 'America/New_York');
       assert.ok(job.state.nextRunAtMs, 'next run computed from cron expression');
     });
 
@@ -106,7 +106,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
       const job = await service.add(definitions.aiFlat);
 
       assert.strictEqual(job.schedule.kind, 'every');
-      assert.strictEqual(job.schedule.everyMs, 120000);
+      if ('everyMs' in job.schedule) assert.strictEqual(job.schedule.everyMs, 120000);
       assert.strictEqual(job.payload.kind, 'agentTurn');
       assert.strictEqual(job.payload.message, 'check the weather');
     });
@@ -131,7 +131,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
   module('execution', function () {
     test('timer fires due job', async function (assert) {
-      const executed = [];
+      const executed: string[] = [];
       service.onJobDue = (job) => {
         executed.push(job.name);
         return { status: 'ok', summary: 'done' };
@@ -180,7 +180,7 @@ module('[Integration] Advanced Scheduling', function (hooks) {
 
       await service.run(job.id);
       assert.strictEqual(job.state.consecutiveErrors, 1);
-      assert.ok(job.state.nextRunAtMs >= Date.now() + 25_000, 'backoff applied');
+      assert.ok(job.state.nextRunAtMs! >= Date.now() + 25_000, 'backoff applied');
     });
   });
 
