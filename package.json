@@ -54,7 +54,7 @@
   "scripts": {
     "build": "tsc",
     "build:test": "tsc -p tsconfig.test.json",
-    "test": "pnpm build && node --import tsx node_modules/.bin/qunit 'test/**/*-test.ts'",
+    "test": "pnpm build && NODE_ENV=test node --import tsx/esm --import ./test/setup.ts node_modules/qunit/bin/qunit.js 'test/**/*-test.ts'",
     "prepublishOnly": "npm test"
   },
   "publishConfig": {
@@ -75,7 +75,7 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "0.2.3-beta.7",
+    "@stonyx/utils": "0.2.3-beta.22",
     "@types/node": "^25.5.2",
     "@types/qunit": "^2.19.13",
     "@types/sinon": "^21.0.1",
@@ -85,6 +85,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "stonyx": "0.2.3-beta.12"
+    "stonyx": "0.2.3-beta.52"
   }
 }
