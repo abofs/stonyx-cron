@@ -37,6 +37,13 @@ export default class Cron {
     Cron.instance = this;
   }
 
+  async init(): Promise<void> {
+    // Self-register so log.cron works even when @stonyx/cron is in the
+    // consumer's `dependencies` (stonyx loader only merges devDependencies).
+    const { logColor = '#888', logMethod = 'cron' } = config.cron ?? {};
+    log.defineType(logMethod, logColor);
+  }
+
   scheduleNextRun(): void {
     if (this.timer) clearTimeout(this.timer);
 
