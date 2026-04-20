@@ -1,6 +1,8 @@
 declare module 'stonyx/config' {
   interface CronConfig {
     log?: boolean;
+    logColor?: string;
+    logMethod?: string;
   }
   interface Config {
     cron: CronConfig;
@@ -15,6 +17,7 @@ declare module 'stonyx/log' {
   interface Log {
     error(message: string, ...args: unknown[]): void;
     cron(message: string): void;
+    defineType(type: string, setting: string, options?: Record<string, unknown> | null): void;
     [key: string]: unknown;
   }
   const log: Log;

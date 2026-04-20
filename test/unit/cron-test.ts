@@ -94,4 +94,29 @@ module('[Unit] Cron', function (hooks) {
 
     assert.ok(stub.calledWithMatch(sinon.match(/Cron job "jobErr" failed:/)), 'Error logged');
   });
+
+  module('self-registers log type in init() (#32)', function (innerHooks) {
+    innerHooks.afterEach(function () {
+      sinon.restore();
+    });
+
+    test('registers cron log type on init', async function (assert) {
+      assert.strictEqual(typeof log.defineType, 'function', 'log.defineType is available');
+
+      const c = new Cron();
+      await c.init();
+
+      assert.strictEqual(typeof log.cron, 'function', 'log.cron is callable after init');
+    });
+
+    test('idempotent: calling init twice does not throw', async function (assert) {
+      const c1 = new Cron();
+      await c1.init();
+
+      const c2 = new Cron();
+      await c2.init();
+
+      assert.strictEqual(typeof log.cron, 'function', 'log.cron still callable after second init');
+    });
+  });
 });
