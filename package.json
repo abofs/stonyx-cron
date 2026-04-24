@@ -3,7 +3,7 @@
   "keywords": [
     "stonyx-module"
   ],
-  "version": "0.2.1-beta.63",
+  "version": "0.2.1-beta.64",
   "description": "Cron/job scheduler for Stonyx framework",
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
@@ -75,7 +75,7 @@
   },
   "homepage": "https://github.com/abofs/stonyx-cron#readme",
   "devDependencies": {
-    "@stonyx/utils": "0.2.3-beta.23",
+    "@stonyx/utils": "0.2.3-beta.24",
     "@types/node": "^25.5.2",
     "@types/qunit": "^2.19.13",
     "@types/sinon": "^21.0.1",
