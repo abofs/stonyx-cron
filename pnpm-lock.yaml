@@ -9,12 +9,12 @@ importers:
   .:
     dependencies:
       stonyx:
-        specifier: 0.2.3-beta.68
-        version: 0.2.3-beta.68
+        specifier: 0.2.3-beta.69
+        version: 0.2.3-beta.69
     devDependencies:
       '@stonyx/utils':
-        specifier: 0.2.3-beta.25
-        version: 0.2.3-beta.25
+        specifier: 0.2.3-beta.26
+        version: 0.2.3-beta.26
       '@types/node':
         specifier: ^25.5.2
         version: 25.5.2
@@ -207,8 +207,8 @@ packages:
   '@stonyx/logs@1.0.1-beta.17':
     resolution: {integrity: sha512-AiGpDywNABlQdU+2NwkIn8TUbjHH2bIZ8p4yerumyk+G5DH/zO8mVKC1t7ABaKweXGiATFPu2fRiNMB7CI6A6g==}
 
-  '@stonyx/utils@0.2.3-beta.25':
-    resolution: {integrity: sha512-g2TvjJIfCfBRbpKWOZDwotAwpkXQ2c4xkRMEao4DZttgt1wYP9nfOEp0V/MkEwjRfq/hSZTQFncG5I36nr6Eng==}
+  '@stonyx/utils@0.2.3-beta.26':
+    resolution: {integrity: sha512-slCeMIpKqlGbWtb5fKwJqMoa6KuacIBV5RsXPX2CtAUXUkMv4CY5flOoUjBap9BLGimrF1xGmmG+f/Pisfb/hg==}
 
   '@types/node@25.5.2':
     resolution: {integrity: sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg==}
@@ -272,8 +272,8 @@ packages:
   sinon@21.0.3:
     resolution: {integrity: sha512-0x8TQFr8EjADhSME01u1ZK31yv2+bd6Z5NrBCHVM+n4qL1wFqbxftmeyi3bwlr49FbbzRfrqSFOpyHCOh/YmYA==}
 
-  stonyx@0.2.3-beta.68:
-    resolution: {integrity: sha512-3Iw2Mu71LCOCcR5ZLCkZIUOL57ub3PjtMvikhxYzYgM6gRK9o1iQyeMT29RgbXaUFDOfz7zidlkmLKzKuvtotQ==}
+  stonyx@0.2.3-beta.69:
+    resolution: {integrity: sha512-nPJe1wZgrvmE++4KtnP8cNGPfqan0dFwDGvjupukTmpPwSpIdYVW8R6Md1/fCqdyFh1K0Uj/dni5gPZdaTwPzw==}
     hasBin: true
 
   supports-color@7.2.0:
@@ -401,7 +401,7 @@ snapshots:
     dependencies:
       chalk: 5.6.2
 
-  '@stonyx/utils@0.2.3-beta.25': {}
+  '@stonyx/utils@0.2.3-beta.26': {}
 
   '@types/node@25.5.2':
     dependencies:
@@ -481,10 +481,10 @@ snapshots:
       diff: 8.0.4
       supports-color: 7.2.0
 
-  stonyx@0.2.3-beta.68:
+  stonyx@0.2.3-beta.69:
     dependencies:
       '@stonyx/logs': 1.0.1-beta.17
-      '@stonyx/utils': 0.2.3-beta.25
+      '@stonyx/utils': 0.2.3-beta.26
 
   supports-color@7.2.0:
     dependencies:
