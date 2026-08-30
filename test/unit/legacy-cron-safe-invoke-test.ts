@@ -24,6 +24,7 @@
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
 import log from 'stonyx/log';
+import { getTimestamp } from '@stonyx/utils/date';
 import Cron from '../../src/main.js';
 
 const { module, test } = QUnit;
@@ -53,7 +54,12 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
     clock = sinon.useFakeTimers({ shouldAdvanceTime: false, now: new Date('2026-06-15T12:00:00Z') });
   });
 
-  hooks.afterEach(function () {
+  hooks.afterEach(function (assert) {
+    // The `unhandledRejection` capture installed above also flips this module
+    // off `--unhandled-rejections=throw`, which would otherwise let the four
+    // tests that do not assert on `rejections` swallow one silently.
+    assert.strictEqual(rejections.length, 0, 'no unhandled rejection escaped this test');
+
     Object.keys(cron.jobs).forEach(key => cron.unregister(key));
     if (cron.timer) clearTimeout(cron.timer);
     clock.restore();
@@ -65,6 +71,7 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
   module('AC1 — a never-settling job does not starve the scheduler', function () {
     // Validation assertion 1
     test('other jobs keep firing while one job hangs', async function (assert) {
+      sinon.stub(log, 'warn');
       const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
       const probe = sinon.spy();
 
@@ -81,6 +88,7 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
     // Validation assertion 2 — pins the invariant, not just the symptom. A fix
     // that re-arms the timer without restoring the heap entry still fails here.
     test('hung job stays in the heap and the timer stays armed', async function (assert) {
+      sinon.stub(log, 'warn');
       const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
       const probe = sinon.spy();
 
@@ -93,7 +101,11 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
         cron.heap.items.some(item => item.key === 'hang'),
         'hung job is still present in the heap (key-scoped)',
       );
-      assert.notStrictEqual(cron.timer, null, 'timer is still armed');
+      // NOT A DISCRIMINATOR: `scheduleNextRun` never nulls `this.timer`, so this
+      // is non-null against `dev` too — that is the false-liveness finding, not
+      // evidence of health. The key-scoped heap assertion above is the only half
+      // of this test that discriminates.
+      assert.notStrictEqual(cron.timer, null, 'timer is non-null (does not discriminate — see the heap assertion above)');
     });
   });
 
