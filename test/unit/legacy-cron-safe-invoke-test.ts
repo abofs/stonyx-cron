@@ -313,7 +313,15 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
         );
       });
 
-      ['', '   ', 'abc', '*/5 * * * *'].forEach(interval => {
+      // The non-finite values are the ONLY ones that distinguish
+      // `!Number.isFinite(seconds)` from a bare `Number.isNaN(seconds)` check:
+      // every other case in this file is caught by a NaN check alone. `'1e400'`
+      // is the one that matters in practice — a plausible typo that looks
+      // numeric, in the same family as `'1e3'`, which this file already pins at
+      // its full value. Under a NaN-only check `'Infinity'`/`'1e400'` register
+      // with `nextTrigger === Infinity` (a timer that re-arms forever and never
+      // runs the job) and `'-Infinity'` silently clamps to the 1s floor.
+      ['', '   ', 'abc', '*/5 * * * *', 'Infinity', '-Infinity', '1e400'].forEach(interval => {
         assert.throws(
           () => cron.register(`unparseable:${interval}`, sinon.spy(), interval),
           /interval/i,
