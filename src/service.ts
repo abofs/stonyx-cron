@@ -272,7 +272,7 @@ export default class CronService {
       // cannot poison the lock chain.
       for (const job of dueJobs) {
         try {
-          await this.executeJob(job, true);
+          await this.#executeClaimed(job);
         } catch (err: unknown) {
           // One job's unexpected throw must not abort the batch. Every job in
           // `dueJobs` is already claimed - marked running and detached from the
@@ -325,16 +325,29 @@ export default class CronService {
    * lock is what wedged every subsequent `locked()` call (add/update/remove)
    * when a callback never settled.
    *
-   * `alreadyClaimed` is passed by `onTimer`, which performs the batch claim
-   * (findDueJobs + markRunning) for all due jobs under a single lock.
+   * `onTimer` performs the batch claim (findDueJobs + markRunning) for all due
+   * jobs under a single lock, then enters at phase 2 via `#executeClaimed`.
+   * That entry point is a `#private` method rather than a parameter on this
+   * one: as a published `alreadyClaimed` boolean it was a supported way for a
+   * consumer to skip phase 1 entirely, which defeats the claim guard AC4 asks
+   * for and allows concurrent `onJobDue` invocations for the same job.
    */
-  async executeJob(job: Job, alreadyClaimed = false): Promise<ExecuteResult> {
+  async executeJob(job: Job): Promise<ExecuteResult> {
     // -- Phase 1: claim (locked) --
-    if (!alreadyClaimed) {
-      const refusal = await locked(() => this.claimJob(job));
-      if (refusal) return { status: 'skipped', reason: refusal };
-    }
+    const refusal = await locked(() => this.claimJob(job));
+    if (refusal) return { status: 'skipped', reason: refusal };
 
+    return this.#executeClaimed(job);
+  }
+
+  /**
+   * Phases 2 and 3 for a job that has already been claimed - either by
+   * `executeJob` above or by `onTimer`'s batch claim.
+   *
+   * Private: reaching this without a claim would run the consumer callback for
+   * a job nobody owns.
+   */
+  async #executeClaimed(job: Job): Promise<ExecuteResult> {
     // Membership re-check. The claim and the invoke are no longer in the same
     // critical section, and sibling callbacks run unlocked, so a `remove()` can
     // land in between AND RESOLVE - it used to deadlock. A resolved `remove()`

@@ -19,6 +19,7 @@
  * never `items.length`.
  */
 import QUnit from 'qunit';
+import { readFileSync } from 'fs';
 import sinon, { type SinonFakeTimers } from 'sinon';
 import config from 'stonyx/config';
 import log from 'stonyx/log';
@@ -403,6 +404,68 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(service.get(job.id), replacement, 'the replacement is still the registered job');
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the stale settle did not remove the replacement heap entry');
       assert.strictEqual(service.status().nextWakeAtMs, replacement.state.nextRunAtMs, 'the scheduler still wakes for the replacement');
+    });
+  });
+
+  module('HIGH — the claim guard is not bypassable from the published surface', function () {
+    test('a second executeJob() cannot skip the claim phase, even with an extra argument', async function (assert) {
+      // `alreadyClaimed` was an internal onTimer<->executeJob coordination
+      // detail, but it shipped in `dist/service.d.ts` as a plain untagged
+      // boolean on the published "./service" subpath. Passing `true` skipped
+      // phase 1 wholesale, so claimJob's runningAtMs check never ran and
+      // `onJobDue` could be invoked concurrently for the same job — exactly
+      // what AC4 forbids.
+      let invocations = 0;
+      service.onJobDue = () => { invocations++; return new Promise<void>(() => {}); };
+
+      await service.start();
+      const job = await service.add({ name: 'Long Runner', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const first = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+      assert.strictEqual(invocations, 1, 'precondition: the first invocation is in flight');
+      assert.false(first.settled(), 'precondition: the first invocation has not settled');
+
+      const bypass = probe<RunResult>(
+        (service.executeJob as (j: Job, alreadyClaimed?: boolean) => Promise<RunResult>)(job, true),
+      );
+      await clock.tickAsync(0);
+
+      assert.strictEqual(invocations, 1, 'the claim guard cannot be bypassed from the published surface');
+      assert.true(bypass.settled(), 'the bypass attempt settled rather than launching a second invocation');
+      assert.strictEqual(bypass.value()?.reason, 'already running', 'the bypass attempt was refused by the claim phase');
+    });
+
+    test('the pre-claimed path is not in the published type surface', function (assert) {
+      // Not a guard: this fails against head, where dist/service.d.ts carries
+      // `executeJob(job: Job, alreadyClaimed?: boolean)`.
+      const declaration = readFileSync(new URL('../../dist/service.d.ts', import.meta.url), 'utf8');
+      const declarations = declaration.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+      assert.notOk(/alreadyClaimed/.test(declarations), 'dist/service.d.ts declares no alreadyClaimed parameter');
+      assert.ok(/executeJob\(job: Job\): Promise/.test(declarations), 'executeJob publishes a single-parameter signature');
+      assert.ok(/#private;/.test(declarations), 'the pre-claimed entry point is emitted as #private, not as a callable member');
+    });
+
+    test('claimJob refuses a job removed between run()\'s lookup and the lock turn', async function (assert) {
+      // run() reads `this.jobs.get(id)` unlocked, then claims under the lock.
+      // A remove() queued first resolves in between, so the claim would
+      // otherwise markRunning an orphan and removeFromHeap an id that may
+      // already belong to a replacement.
+      service.onJobDue = () => ({ status: 'ok' });
+
+      await service.start();
+      const job = await service.add({ name: 'Racing Removal', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const removal = probe(service.remove(job.id));
+      const result = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.true(removal.settled(), 'precondition: the removal resolved');
+      assert.true(result.settled(), 'run() settled');
+      assert.strictEqual(result.value()?.status, 'skipped', 'run() reported a skip');
+      assert.strictEqual(result.value()?.reason, 'removed', 'run() reported reason "removed"');
+      assert.strictEqual(service.get(job.id), null, 'the job stays removed');
     });
   });
 
