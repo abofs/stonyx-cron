@@ -419,6 +419,15 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
         String(errorSpy.firstCall.args[0]).includes('async boom'),
         'the error text reaches the operator instead of being swallowed as a boolean',
       );
+      // README and docs/architecture.md both promise the *stack* is
+      // interpolated, and the stack is the whole reason `describeError` exists
+      // rather than `${err}`. Without this, `describeError` collapses to
+      // `String(err)` — which still satisfies the assertion above, since
+      // `String(err)` is `"Error: async boom"`.
+      assert.true(
+        String(errorSpy.firstCall.args[0]).includes('at '),
+        'the stack is interpolated, not just the message',
+      );
     });
 
     test('a rejecting logger cannot re-create the unhandled rejection this fix prevents', async function (assert) {
