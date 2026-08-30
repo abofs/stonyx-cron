@@ -345,4 +345,25 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.strictEqual(skips.length, 1, 'exactly one skip warning across the five skipped ticks');
     });
   });
+  module('SME WARNING — the documented same-tick overlap is pinned', function () {
+    // README: "Two *different* jobs that fall due on the same tick may therefore
+    // overlap." That was only incidentally exercised inside AC1; a regression
+    // that reintroduced sequential draining for two distinct keys — while
+    // keeping the hang non-blocking — would leave the README lying and the suite
+    // green. Fails against `dev`, and against Mutation H (restore the drain
+    // loop's `await`).
+    test('two different jobs due on the same tick both fire', async function (assert) {
+      sinon.stub(log, 'warn');
+      const first = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+      const second = sinon.spy();
+
+      cron.register('first', first, '2');
+      cron.register('second', second, '2');
+
+      await clock.tickAsync(2100);
+
+      assert.strictEqual(first.callCount, 1, 'precondition: the first job fired and is still running');
+      assert.strictEqual(second.callCount, 1, 'the second job fired on the same tick, while the first was still in flight');
+    });
+  });
 });
