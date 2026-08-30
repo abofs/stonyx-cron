@@ -30,6 +30,25 @@ only ever release the guard it set, and a job removed by `unregister` takes its
 guard with it. It mirrors `job.state.runningAtMs` in the service tier
 (`markRunning` / `applyResult` / `isDue` in `src/job.ts`).
 
+**Accepted residual — concurrency across unregister/re-register.** Because a
+replacement job object carries a fresh guard, unregistering a key whose
+invocation is still pending and re-registering it lets the replacement run
+alongside the abandoned invocation. This is **unbounded in principle**: nothing
+serialises a replacement against an abandoned one, so N re-registrations within
+one callback runtime yield up to N+1 concurrent invocations of that key, scaling
+as roughly `floor(callbackRuntime / reRegisterPeriod) + 1`. Measured: 3
+concurrent with two re-registrations, 10 with twelve.
+
+It is accepted on three measured facts. It is **not a regression** — the same
+probe measures 11 concurrent from 31 starts before this change, versus 10 from
+14 after, and the new code drains cleanly where the old does not. It is
+**unreachable for the only known consumer** — `stonyx-orm/src/db.ts` registers
+once and never unregisters. And **bounding it properly would reintroduce the
+defect this class was fixed for**: serialising a replacement against an
+invocation the consumer has explicitly abandoned is exactly what produces a
+permanently dead job. Bounding the callback remains the consumer's
+responsibility.
+
 **Public Methods:**
 
 **`register(key, callback, interval, runOnInit=false)`**
