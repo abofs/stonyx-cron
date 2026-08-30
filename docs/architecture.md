@@ -36,10 +36,14 @@ guard with it. It mirrors `job.state.runningAtMs` in the service tier
 - Registers a new recurring job
 - `key` (string): Unique job identifier
 - `callback` (Function): Async function to execute on each trigger
-- `interval` (string): Whole seconds between executions. **Throws** a `TypeError`
-  if the value cannot be parsed as seconds — a cron expression belongs to
-  `CronService`, not to this class. Values below `1` are clamped to `1` with a
-  warning.
+- `interval` (string): Whole seconds between executions. The value must be
+  *wholly* numeric. **Throws** a `TypeError` on anything else, including a
+  **partially** numeric value: `'1h'`, `'30s'` and `'5m'` are rejected, not read
+  as 1, 30 and 5 (a `parseInt`-style read would truncate them and schedule the
+  job 3600x/120x/60x faster than written, with no error attached). A cron
+  expression belongs to `CronService`, not to this class, and an empty string is
+  rejected as well. A wholly numeric value below `1` (`'0'`, `'-5'`) is
+  interpretable rather than a typo and is clamped to `1` with a warning.
 - `runOnInit` (boolean): Whether to run callback immediately (through
   `safeInvoke`, so a rejection is caught rather than fatal)
 
@@ -70,9 +74,16 @@ guard with it. It mirrors `job.state.runningAtMs` in the service tier
 - Internal helpers of `safeInvoke`: clear a job's guard, and log without letting
   the logger's own failure escape as an unhandled rejection
 
+**`toSeconds(interval)`**
+- Reads an interval as a whole-second count *without* the floor; returns `null`
+  when the value is not wholly numeric (`'1h'`, `'*/5 * * * *'`, `''`)
+- Uses `Number()`, never `parseInt`: `parseInt` stops at the first non-numeric
+  character and fails in the dangerous direction (`'1h'` → 1, `'1e3'` → 1), which
+  silently speeds a job up instead of rejecting it
+
 **`parseInterval(interval)`**
-- Parses an interval to whole seconds, floored at `1`; returns `null` if it
-  cannot be parsed at all
+- `toSeconds` with the `1` second floor applied; returns `null` on the same
+  inputs `toSeconds` rejects
 
 **`setNextTrigger(job)`**
 - Updates job's `nextTrigger` to `now + interval`, with the interval floored at
@@ -231,7 +242,9 @@ Two rules that fall out of this and are easy to break:
    `while` loop in `runDueJobs` has no suspension point and `nextTrigger > now`
    is its only exit condition. An interval that does not advance `nextTrigger`
    (`NaN`, `0`, negative) spins the loop forever and blocks the event loop.
-   `setNextTrigger` floors the interval at 1 second for exactly this reason.
+   `setNextTrigger` floors the interval at 1 second for exactly this reason —
+   independently of `register`'s validation, since `jobs` is public, mutable
+   state and an interval can be changed after registration.
 
 ### Time Handling
 **Always use `getTimestamp()` for current time:**

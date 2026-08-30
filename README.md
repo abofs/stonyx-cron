@@ -41,7 +41,7 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 >
 > Synchronous throws and asynchronous rejections are both caught and reported through `log.error`, with the error's stack interpolated into the message. Neither can stop the scheduler.
 >
-> `interval` is **whole seconds, as a string**. `register` throws a `TypeError` on a value it cannot parse — in particular, this class does not accept cron expressions; use `CronService` (`@stonyx/cron/service`) for those. Values below `1` are clamped to `1` second with a warning.
+> `interval` is **whole seconds, as a string**, and the value must be *wholly* numeric. `register` throws a `TypeError` on anything else — including **partially** numeric values: `'1h'`, `'30s'` and `'5m'` are rejected outright, **not** read as 1, 30 and 5 seconds. Cron expressions are rejected for the same reason; use `CronService` (`@stonyx/cron/service`) for those, and an empty string is rejected too. The interval is read with `Number()`, so exponent notation and surrounding whitespace resolve at full value (`'1e3'` is 1000 seconds, `' 60 '` is 60). A value that *is* wholly numeric but below `1` (`'0'`, `'-5'`) is interpretable as “as often as possible” and is clamped to `1` second with a warning rather than rejected.
 
 > `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
 

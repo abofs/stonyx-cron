@@ -216,25 +216,26 @@ export default class Cron {
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
-    const seconds = this.parseInterval(interval);
+    const seconds = this.toSeconds(interval);
 
-    // Fail fast rather than clamp. An unparseable interval is a programming
-    // error with exactly one likely cause — a cron expression handed to the
-    // legacy class, which takes whole seconds — and clamping it would silently
-    // run a job intended for every 5 minutes once per second, hammering whatever
-    // the callback talks to. Throwing surfaces it at the call site, at boot,
-    // before anything is scheduled. A degenerate-but-parseable interval (`'0'`,
-    // `'-5'`) is a different case: it is interpretable as "as often as possible"
-    // and is clamped to the floor with one warning.
+    // Fail fast rather than clamp. An interval that is not wholly a number is a
+    // programming error — a cron expression handed to the legacy class, or a
+    // duration with a unit on it (`'1h'`, `'30s'`) — and clamping or truncating
+    // it would silently run a job intended for every hour once per second,
+    // hammering whatever the callback talks to. Throwing surfaces it at the call
+    // site, at boot, before anything is scheduled. A degenerate-but-numeric
+    // interval (`'0'`, `'-5'`) is a different case: it is interpretable as "as
+    // often as possible" and is clamped to the floor with one warning.
     if (seconds === null) {
       throw new TypeError(
         `Cron job ${JSON.stringify(key)} has an invalid interval ${JSON.stringify(interval)}: `
-        + 'expected whole seconds (e.g. \'30\'). The legacy Cron class does not accept cron '
-        + 'expressions — use CronService for those.',
+        + 'expected a value that is wholly a whole-second count (e.g. \'30\'). Units are not '
+        + 'accepted — \'1h\' is rejected, not read as 1. The legacy Cron class does not accept '
+        + 'cron expressions — use CronService for those.',
       );
     }
 
-    if (parseInt(interval, 10) < MIN_INTERVAL_SECONDS) {
+    if (seconds < MIN_INTERVAL_SECONDS) {
       this.report(
         'warn',
         `Cron job ${JSON.stringify(key)} interval ${JSON.stringify(interval)} is below the `
@@ -271,15 +272,45 @@ export default class Cron {
   }
 
   /**
-   * Parse a job interval (whole seconds, as a string) into a positive integer.
+   * Read a job interval (whole seconds, as a string) as a number, WITHOUT
+   * applying the floor. Returns `null` when the value is not wholly numeric.
+   *
+   * `Number()` rather than `parseInt`, deliberately. `parseInt` stops at the
+   * first non-numeric character and so fails in the dangerous direction: it
+   * reads `'1h'` as 1, `'30s'` as 30 and `'5m'` as 5 — intervals 3600x, 120x and
+   * 60x faster than written, scheduled with no error attached to them. A `NaN`
+   * check catches a cron expression but not those, and those are the likelier
+   * typo: `stonyx-orm` hands `DB_SAVE_INTERVAL` straight through from the
+   * environment as a string. `Number()` reads the whole value or none of it, and
+   * also gets `'1e3'` (1000, not 1) and `' 60 '` (60) right.
+   *
+   * An empty or whitespace-only string is rejected rather than read as
+   * `Number('')` === 0, so a missing value is a loud error and not a job silently
+   * clamped to the floor.
+   */
+  toSeconds(interval: string): number | null {
+    const trimmed = String(interval ?? '').trim();
+
+    if (!trimmed) return null;
+
+    const seconds = Number(trimmed);
+
+    if (!Number.isFinite(seconds)) return null;
+
+    // Whole seconds; a fractional value truncates as it always has.
+    return Math.trunc(seconds);
+  }
+
+  /**
+   * Parse a job interval into a positive integer at or above the floor.
    *
    * Returns `null` when the value cannot be parsed at all, so callers can choose
    * between failing fast (`register`) and falling back (`setNextTrigger`).
    */
   parseInterval(interval: string): number | null {
-    const seconds = parseInt(interval, 10);
+    const seconds = this.toSeconds(interval);
 
-    if (!Number.isFinite(seconds)) return null;
+    if (seconds === null) return null;
 
     return Math.max(MIN_INTERVAL_SECONDS, seconds);
   }

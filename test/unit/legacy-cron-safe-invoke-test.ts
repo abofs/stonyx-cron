@@ -226,6 +226,89 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
     });
   });
 
+  module('CTO HIGH — a partially-numeric interval must be rejected, not truncated', function () {
+    // `parseInt` stops at the first non-numeric character, so it fails in the
+    // dangerous direction: `'1h'` becomes 1, `'30s'` becomes 30, `'5m'` becomes 5.
+    // The NaN check catches a cron expression but not these — and these are the
+    // likelier consumer typo. `stonyx-orm` reads `DB_SAVE_INTERVAL` from the
+    // environment as a string and hands it straight to `register`, so
+    // `DB_SAVE_INTERVAL=1h` yields a one-second autosave loop against the disk:
+    // a 3600x speed-up with no error attached to it. `Number()` rejects the whole
+    // value instead of silently truncating it.
+    test('register rejects an interval with a trailing unit instead of truncating it', function (assert) {
+      // key -> the interval the truncating parse would have silently produced
+      const cases: Array<[string, number]> = [['1h', 1], ['30s', 30], ['5m', 5], ['60 seconds', 60]];
+
+      cases.forEach(([interval, truncated]) => {
+        const callback = sinon.spy();
+
+        assert.throws(
+          () => cron.register(`unit:${interval}`, callback, interval),
+          /interval/i,
+          `register threw on ${JSON.stringify(interval)} rather than scheduling it every ${truncated}s`,
+        );
+        assert.notOk(cron.jobs[`unit:${interval}`], `${JSON.stringify(interval)} was not registered`);
+        assert.false(
+          cron.heap.items.some(item => item.key === `unit:${interval}`),
+          `${JSON.stringify(interval)} was not pushed onto the heap (key-scoped)`,
+        );
+        assert.strictEqual(callback.callCount, 0, `the ${JSON.stringify(interval)} callback was never invoked`);
+      });
+    });
+
+    // The opposite direction of the same defect: `parseInt('1e3')` is 1, so an
+    // exponent-notation interval runs 1000x faster than written rather than
+    // being rejected. `Number()` reads the whole value.
+    test('an exponent-notation interval resolves to its full value', function (assert) {
+      cron.register('exp', sinon.spy(), '1e3');
+
+      assert.strictEqual(
+        cron.jobs['exp']?.nextTrigger,
+        getTimestamp() + 1000,
+        "'1e3' scheduled 1000s out, not 1s out",
+      );
+    });
+
+    test('a padded numeric interval is accepted at its full value', function (assert) {
+      cron.register('padded', sinon.spy(), ' 60 ');
+
+      assert.strictEqual(
+        cron.jobs['padded']?.nextTrigger,
+        getTimestamp() + 60,
+        "' 60 ' scheduled 60s out",
+      );
+    });
+
+    // POLICY PIN — the throw/clamp split is unchanged by the parsing swap.
+    // Interpretable-but-degenerate values still clamp with one warning; values
+    // that carry no whole-second reading at all still throw.
+    test('degenerate but interpretable intervals still clamp with a warning rather than throwing', function (assert) {
+      const warnSpy = sinon.stub(log, 'warn');
+
+      ['0', '-5'].forEach(interval => {
+        cron.register(`degenerate:${interval}`, sinon.spy(), interval);
+
+        assert.strictEqual(
+          cron.jobs[`degenerate:${interval}`]?.nextTrigger,
+          getTimestamp() + 1,
+          `interval ${JSON.stringify(interval)} was clamped to the 1s floor rather than rejected`,
+        );
+        assert.true(
+          warnSpy.calledWithMatch(sinon.match(new RegExp(`clamping to 1s`))),
+          `interval ${JSON.stringify(interval)} logged a clamp warning`,
+        );
+      });
+
+      ['', '   ', 'abc', '*/5 * * * *'].forEach(interval => {
+        assert.throws(
+          () => cron.register(`unparseable:${interval}`, sinon.spy(), interval),
+          /interval/i,
+          `interval ${JSON.stringify(interval)} still throws`,
+        );
+      });
+    });
+  });
+
   module('SME BLOCKER 2 — the in-flight guard is released on the async path', function () {
     // GUARD — passes against the current head. The head *has* a release; nothing
     // proved it, which is the finding. Mutation-proven below rather than against

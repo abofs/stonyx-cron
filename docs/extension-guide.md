@@ -51,7 +51,9 @@ if (this.items[idx].nextTrigger < this.items[parentIdx].nextTrigger ||
 // In main.js setNextTrigger:
 setNextTrigger(job) {
   const priorityOffset = job.priority || 0;
-  job.nextTrigger = getTimestamp() + parseInt(job.interval, 10) - priorityOffset;
+  // `parseInterval` (never `parseInt`) — it rejects a partially numeric
+  // interval and applies the 1 second floor the drain loop depends on.
+  job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? 1) - priorityOffset;
 }
 ```
 
@@ -247,8 +249,11 @@ cron.register('job', () => {
   every subsequent tick (one warning per stuck run) and never runs again for the
   lifetime of the process. `Cron` deliberately provides no timeout — bound your
   own I/O.
-- **`interval` is whole seconds, as a string.** `register` throws a `TypeError`
-  on anything it cannot parse; cron expressions belong to `CronService`.
+- **`interval` is whole seconds, as a string, and must be wholly numeric.**
+  `register` throws a `TypeError` on anything else — including a partially
+  numeric value: `'1h'`, `'30s'` and `'5m'` are rejected, not truncated to 1, 30
+  and 5. Cron expressions belong to `CronService`. A wholly numeric value below
+  `1` is clamped to the 1 second floor with a warning instead.
 
 ### Heap Reference Equality
 **Pitfall:** Modifying job objects outside the scheduler
