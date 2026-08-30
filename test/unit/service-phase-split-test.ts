@@ -14,6 +14,9 @@
  * the promise rather than awaiting it, then assert a settled-flag after
  * `clock.tickAsync(0)` — so a hung path produces a clean assertion failure
  * rather than a runner timeout.
+ *
+ * Heap assertions are key-scoped (`items.filter(i => i.key === job.id)`),
+ * never `items.length`.
  */
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
@@ -21,7 +24,32 @@ import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
 import { resetLock } from '../../src/locked.js';
 
-const { module, test, todo } = QUnit;
+const { module, test } = QUnit;
+
+type RunResult = Awaited<ReturnType<CronService['run']>>;
+
+const EVERY_30S = { kind: 'every', everyMs: 30_000 } as const;
+const EVERY_HOUR = { kind: 'every', everyMs: 3_600_000 } as const;
+const PAYLOAD = { kind: 'agentTurn', message: 'go' };
+
+/** Number of heap entries carrying this job's key. */
+function heapEntriesFor(service: CronService, id: string): number {
+  return service.heap.items.filter(item => item.key === id).length;
+}
+
+/** Float a promise and report whether it has settled, without ever awaiting it. */
+function probe<T>(promise: Promise<T>): { settled: () => boolean; value: () => T | undefined; error: () => unknown } {
+  let done = false;
+  let value: T | undefined;
+  let error: unknown;
+
+  promise.then(
+    result => { done = true; value = result; },
+    err => { done = true; error = err; },
+  );
+
+  return { settled: () => done, value: () => value, error: () => error };
+}
 
 module('CronService — phase split (#34)', function (hooks) {
   setupIntegrationTests(hooks);
@@ -40,32 +68,139 @@ module('CronService — phase split (#34)', function (hooks) {
   });
 
   module('A3 — a hung callback holds no lock', function () {
-    todo('add/update/remove all resolve while onJobDue is still in flight', function (assert) {
-      assert.ok(false, 'TODO: never-settling onJobDue, job driven due via clock.tickAsync(31_000); assert service.running === true as precondition, then add/update/remove each settle');
+    test('add/update/remove all resolve while onJobDue is still in flight', async function (assert) {
+      // Arbitrary consumer code that never settles — the live failure mode
+      // reported downstream (a spawned external process that hangs).
+      service.onJobDue = () => new Promise<void>(() => {});
+
+      await service.start();
+      const hung = await service.add({ name: 'Hung', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const victim = await service.add({ name: 'Victim', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      // Drive the job due through the real timer path — armTimer fires
+      // onTimer naturally. Calling onTimer() directly without advancing the
+      // clock would make findDueJobs return [] and the probe vacuous.
+      await clock.tickAsync(31_000);
+
+      // Preconditions: a callback is genuinely in flight and unresolved.
+      assert.true(service.running, 'precondition: scheduler is mid-execution');
+      assert.ok(service.get(hung.id)?.state.runningAtMs, 'precondition: the hung job is marked running');
+
+      const added = probe(service.add({ name: 'Added During Hang', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } }));
+      const updated = probe(service.update(victim.id, { name: 'Updated During Hang' }));
+      const removed = probe(service.remove(victim.id));
+
+      await clock.tickAsync(0);
+
+      assert.true(added.settled(), 'add() resolves while the callback is in flight');
+      assert.true(updated.settled(), 'update() resolves while the callback is in flight');
+      assert.true(removed.settled(), 'remove() resolves while the callback is in flight');
+      assert.strictEqual(added.error(), undefined, 'add() resolved rather than rejecting');
+      assert.strictEqual(updated.error(), undefined, 'update() resolved rather than rejecting');
+      assert.strictEqual(removed.error(), undefined, 'remove() resolved rather than rejecting');
+      assert.strictEqual(service.get(victim.id), null, 'the mutation actually applied — victim is gone');
     });
   });
 
   module('A6 — run() does not duplicate heap entries', function () {
-    todo('run(id, force) twice leaves exactly one heap entry for the job', function (assert) {
-      assert.ok(false, 'TODO: two forced runs, then heap.items.filter(i => i.key === job.id).length === 1 (currently 3)');
+    test('run(id, force) twice leaves exactly one heap entry for the job', async function (assert) {
+      service.onJobDue = () => ({ status: 'ok' });
+
+      await service.start();
+      const job = await service.add({ name: 'Manual', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: one heap entry after add');
+
+      await service.run(job.id, 'force');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'one heap entry after the first forced run');
+
+      await service.run(job.id, 'force');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'one heap entry after the second forced run');
     });
   });
 
   module('A9 — a self-mutating callback is no longer reentrant', function () {
-    todo('onJobDue calling add() and update() on itself completes and both mutations apply', function (assert) {
-      assert.ok(false, 'TODO: inner add resolves, status().jobCount === 2, self-update applied');
+    test('onJobDue calling add() and update() on itself completes and both mutations apply', async function (assert) {
+      let innerAddId: string | null = null;
+      let innerError: string | null = null;
+      let callbackCompleted = false;
+
+      service.onJobDue = async (job) => {
+        try {
+          const spawned = await service.add({ name: 'Spawned', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+          innerAddId = spawned.id;
+          await service.update(job.id, { name: 'Renamed From Inside' });
+        } catch (err: unknown) {
+          innerError = err instanceof Error ? err.message : String(err);
+        }
+        callbackCompleted = true;
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Self Mutating', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.strictEqual(innerError, null, 'no error escaped the inner mutations');
+      assert.ok(innerAddId, 'the inner add() resolved from inside the callback');
+      assert.true(callbackCompleted, 'the callback ran to completion');
+      assert.strictEqual(service.status().jobCount, 2, 'the spawned job was added');
+      assert.strictEqual(service.get(job.id)?.name, 'Renamed From Inside', 'the self-update applied');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the self-updated job holds exactly one heap entry');
     });
   });
 
   module('A4 — run() will not launch a concurrent second invocation', function () {
-    todo('run(id, force) on a job with runningAtMs returns skipped/already running', function (assert) {
-      assert.ok(false, 'TODO: assert { status: skipped, reason: already running } and that onJobDue was not re-entered');
+    test('run(id, force) on a job with runningAtMs returns skipped/already running', async function (assert) {
+      let invocations = 0;
+      service.onJobDue = () => {
+        invocations++;
+        return new Promise<void>(() => {});
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Long Runner', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const first = probe(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.strictEqual(invocations, 1, 'precondition: the first run invoked the callback');
+      assert.false(first.settled(), 'precondition: the first run has not settled');
+      assert.ok(service.get(job.id)?.state.runningAtMs, 'precondition: runningAtMs is set by the claim phase');
+
+      const second = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.true(second.settled(), 'the second run settles rather than hanging behind the first');
+      assert.strictEqual(second.value()?.status, 'skipped', 'second run reports skipped');
+      assert.strictEqual(second.value()?.reason, 'already running', 'second run reports "already running"');
+      assert.strictEqual(invocations, 1, 'the callback was not re-entered concurrently');
     });
   });
 
   module('regression guards', function () {
-    todo('the timer path still executes a due job and re-arms with a single heap entry', function (assert) {
-      assert.ok(false, 'TODO: guard — phase split must not change the happy-path timer behaviour');
+    // GUARD — passes against dev too. Present so the phase split cannot
+    // silently break the happy path it refactors.
+    test('guard: the timer path still executes a due job and leaves a single heap entry', async function (assert) {
+      const executed: string[] = [];
+      service.onJobDue = async (job) => {
+        await Promise.resolve(); // genuinely yields — the lock's critical section is entered for real
+        executed.push(job.name);
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Timer Guard', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.deepEqual(executed, ['Timer Guard'], 'guard: the callback fired exactly once via the timer');
+      assert.strictEqual(service.get(job.id)?.state.lastStatus, 'ok', 'guard: the result was applied to the job');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'guard: exactly one heap entry after settle');
+      assert.false(service.running, 'guard: the scheduler released and re-armed');
     });
   });
 });
