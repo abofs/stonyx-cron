@@ -35,6 +35,8 @@ type RunResult = Awaited<ReturnType<CronService['run']>>;
 const EVERY_30S = { kind: 'every', everyMs: 30_000 } as const;
 const EVERY_HOUR = { kind: 'every', everyMs: 3_600_000 } as const;
 const PAYLOAD = { kind: 'agentTurn', message: 'go' };
+/** Mirrors MAX_TIMER_DELAY_MS in src/service.ts. */
+const MAX_TIMER_DELAY_MS = 60_000;
 
 /** Number of heap entries carrying this job's key. */
 function heapEntriesFor(service: CronService, id: string): number {
@@ -466,6 +468,46 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(result.value()?.status, 'skipped', 'run() reported a skip');
       assert.strictEqual(result.value()?.reason, 'removed', 'run() reported reason "removed"');
       assert.strictEqual(service.get(job.id), null, 'the job stays removed');
+    });
+  });
+
+  module('HIGH — the scheduler-death re-arm branch', function () {
+    test('a timer tick during an in-flight callback re-arms rather than re-entering', async function (assert) {
+      // `onTimer`'s `if (this.running)` branch had 0 hits across all 147
+      // pre-existing tests, confirmed with an instrumented counter. Note a
+      // plain long tick does not reach it: `onTimer`'s `finally` never runs
+      // for a hung callback, so nothing re-arms unless a mutation
+      // (add/update/remove) calls `armTimer()` during the window.
+      const invoked: string[] = [];
+      service.onJobDue = (job) => {
+        invoked.push(job.name);
+        return new Promise<void>(() => {});
+      };
+
+      let timerEntries = 0;
+      const originalOnTimer = service.onTimer.bind(service);
+      service.onTimer = async () => { timerEntries++; return originalOnTimer(); };
+
+      await service.start();
+      await service.add({ name: 'Hung', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      assert.strictEqual(timerEntries, 1, 'precondition: the timer fired once');
+      assert.true(service.running, 'precondition: a callback is in flight');
+
+      // add() re-arms the timer while the scheduler is still latched.
+      const other = await service.add({ name: 'Other', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      await clock.tickAsync(31_000);
+
+      assert.strictEqual(timerEntries, 2, 'the re-armed timer fired a second time');
+      assert.deepEqual(invoked, ['Hung'], 'the second tick did not re-enter the batch');
+      assert.strictEqual(service.get(other.id)?.state.runningAtMs, undefined, 'the second job was not claimed by the re-entrant tick');
+      assert.strictEqual(heapEntriesFor(service, other.id), 1, 'the second job is still queued');
+
+      // The branch's whole purpose: it must leave a timer armed, or the
+      // scheduler is dead the moment a callback outlives one tick.
+      await clock.tickAsync(MAX_TIMER_DELAY_MS + 1_000);
+      assert.strictEqual(timerEntries, 3, 'the running-guard branch re-armed at the max delay');
     });
   });
 
