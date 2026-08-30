@@ -33,6 +33,13 @@ interface CronJob extends HeapItem {
   callback: () => void | Promise<void>;
   interval: string;
   key: string;
+
+  /**
+   * Timestamp (ms) at which the current invocation started; `undefined` when the
+   * job is idle. Mirrors `job.state.runningAtMs` in the service tier
+   * (`src/job.ts` `markRunning`/`applyResult`/`isDue`).
+   */
+  runningAtMs?: number;
 }
 
 export default class Cron {
@@ -41,9 +48,6 @@ export default class Cron {
   jobs: Record<string, CronJob> = {};
   heap: MinHeap<CronJob> = new MinHeap();
   timer: ReturnType<typeof setTimeout> | null = null;
-
-  /** Keys whose previous invocation has not settled yet. */
-  inFlight: Set<string> = new Set();
 
   constructor() {
     if (Cron.instance) return Cron.instance;
@@ -107,12 +111,22 @@ export default class Cron {
     const { key } = job;
     const context = runOnInit ? 'failed on init:' : 'failed:';
 
-    if (this.inFlight.has(key)) {
+    // The in-flight guard lives on the job object, not in a module-level set
+    // keyed by string. That is what gives each invocation an identity: the only
+    // thing that ever clears the flag is the settle handler of the invocation
+    // that set it, and that handler closes over this exact job object. A stale
+    // handler therefore cannot release a *later* invocation's guard. It also
+    // matches the in-repo idiom one tier up (`job.state.runningAtMs`).
+    //
+    // `unregister` needs no explicit clear as a result: the flag is dropped with
+    // the job object, so a re-registered key gets a fresh object and runs
+    // immediately, while the abandoned invocation can only ever release itself.
+    if (job.runningAtMs !== undefined) {
       log.warn(`Cron job "${key}" is still running; skipping this tick`);
       return;
     }
 
-    this.inFlight.add(key);
+    job.runningAtMs = Date.now();
 
     try {
       const result = job.callback();
@@ -120,16 +134,21 @@ export default class Cron {
       if (result && typeof (result as Promise<void>).then === 'function') {
         Promise.resolve(result)
           .catch(err => log.error(`Cron job "${key}" ${context}`, err))
-          .finally(() => this.inFlight.delete(key));
+          .finally(() => this.release(job));
 
         return;
       }
 
-      this.inFlight.delete(key);
+      this.release(job);
     } catch (err) {
-      this.inFlight.delete(key);
+      this.release(job);
       log.error(`Cron job "${key}" ${context}`, err);
     }
+  }
+
+  /** Release a job's in-flight guard. Only ever called for the job it belongs to. */
+  release(job: CronJob): void {
+    job.runningAtMs = undefined;
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
@@ -180,7 +199,6 @@ export default class Cron {
 
     delete jobs[key];
     heap.remove(job);
-    this.inFlight.delete(key);
 
     if (config.debug) this.log('job has been unregistered', key);
 

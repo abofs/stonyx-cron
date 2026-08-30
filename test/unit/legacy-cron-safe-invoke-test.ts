@@ -225,4 +225,55 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.strictEqual(callback.callCount, 3, 'fired once per second rather than spinning');
     });
   });
+
+  module('SME HIGH 3 — an invocation can only release its own guard', function () {
+    // The measured bypass: `unregister` clears the key, a replacement starts, and
+    // then the ABANDONED invocation settles and clears the flag the replacement
+    // owns — letting a third invocation start with no further unregister.
+    test('a settling abandoned invocation cannot release a re-registered job', async function (assert) {
+      sinon.stub(log, 'warn');
+      let settleFirst: (() => void) | undefined;
+      const first = sinon.stub().callsFake(() => new Promise<void>(resolve => { settleFirst = resolve; }));
+      const second = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+
+      cron.register('save', first, '1');
+      await clock.tickAsync(1100);
+      assert.strictEqual(first.callCount, 1, 'precondition: the first invocation is in flight');
+
+      cron.unregister('save');
+      cron.register('save', second, '1');
+      await clock.tickAsync(1100);
+      assert.strictEqual(second.callCount, 1, 'precondition: the replacement is in flight');
+
+      // The abandoned invocation settles. Its release must not touch the
+      // replacement's guard.
+      settleFirst?.();
+      await clock.tickAsync(0);
+
+      await clock.tickAsync(1100);
+      assert.strictEqual(second.callCount, 1, 'the replacement was not re-invoked by a stale release');
+      assert.ok(cron.jobs['save']?.runningAtMs, 'the replacement still holds its own in-flight guard');
+    });
+
+    // GUARD — passes against the current head (which clears `inFlight` in
+    // `unregister`). Pins the behaviour the head only claims in its PR body and
+    // no test covered; mutation-proven below.
+    test('unregister releases the key so a re-registered job runs again', async function (assert) {
+      sinon.stub(log, 'warn');
+      const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+
+      cron.register('h', hang, '1');
+      await clock.tickAsync(1100);
+      assert.ok(cron.jobs['h']?.runningAtMs, 'precondition: the key has an invocation in flight');
+
+      cron.unregister('h');
+      assert.notOk(cron.jobs['h'], 'unregister dropped the job that held the guard');
+
+      const fresh = sinon.spy();
+      cron.register('h', fresh, '1');
+      await clock.tickAsync(1100);
+
+      assert.strictEqual(fresh.callCount, 1, 're-registered key runs again while the abandoned invocation is still pending');
+    });
+  });
 });
