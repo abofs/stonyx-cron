@@ -32,6 +32,9 @@ export default class Cron {
   heap: MinHeap<CronJob> = new MinHeap();
   timer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Keys whose previous invocation has not settled yet. */
+  inFlight: Set<string> = new Set();
+
   constructor() {
     if (Cron.instance) return Cron.instance;
     Cron.instance = this;
@@ -69,17 +72,54 @@ export default class Cron {
 
       if (config.debug) this.log('job has been triggered', job.key);
 
-      try {
-        await job.callback();
-      } catch (err) {
-        log.error(`Cron job "${job.key}" failed:`, err);
-      }
-
+      // Reschedule *before* invoking. The callback's result is not used by this
+      // class (`runDueJobs` returns void), so awaiting it bought nothing and
+      // cost the scheduler: a callback that never settled left the job absent
+      // from the heap and stopped the timer from ever re-arming.
       this.setNextTrigger(job);
       heap.push(job);
+
+      this.safeInvoke(job);
     }
 
     this.scheduleNextRun();
+  }
+
+  /**
+   * The one safe way this class invokes a consumer callback.
+   *
+   * Never blocks the caller, catches synchronous throws and asynchronous
+   * rejections alike, and skips the invocation entirely when the job's previous
+   * invocation has not settled yet (fire-and-forget would otherwise let a slow
+   * job stack invocations on itself).
+   */
+  safeInvoke(job: CronJob, runOnInit: boolean = false): void {
+    const { key } = job;
+    const context = runOnInit ? 'failed on init:' : 'failed:';
+
+    if (this.inFlight.has(key)) {
+      log.warn(`Cron job "${key}" is still running; skipping this tick`);
+      return;
+    }
+
+    this.inFlight.add(key);
+
+    try {
+      const result = job.callback();
+
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        Promise.resolve(result)
+          .catch(err => log.error(`Cron job "${key}" ${context}`, err))
+          .finally(() => this.inFlight.delete(key));
+
+        return;
+      }
+
+      this.inFlight.delete(key);
+    } catch (err) {
+      this.inFlight.delete(key);
+      log.error(`Cron job "${key}" ${context}`, err);
+    }
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
@@ -92,13 +132,7 @@ export default class Cron {
       this.log(`job has been registered with interval: ${interval}`, key);
     }
 
-    if (runOnInit) {
-      try {
-        callback();
-      } catch (err) {
-        log.error(`Cron job "${key}" failed on init:`, err);
-      }
-    }
+    if (runOnInit) this.safeInvoke(job, true);
 
     this.scheduleNextRun();
   }
@@ -111,6 +145,7 @@ export default class Cron {
 
     delete jobs[key];
     heap.remove(job);
+    this.inFlight.delete(key);
 
     if (config.debug) this.log('job has been unregistered', key);
 

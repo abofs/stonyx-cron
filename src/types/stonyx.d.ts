@@ -16,6 +16,7 @@ declare module 'stonyx/config' {
 declare module 'stonyx/log' {
   interface Log {
     error(message: string, ...args: unknown[]): void;
+    warn(message: string, ...args: unknown[]): void;
     cron(message: string): void;
     defineType(type: string, setting: string, options?: Record<string, unknown> | null): void;
     [key: string]: unknown;
