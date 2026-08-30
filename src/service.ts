@@ -207,6 +207,25 @@ export default class CronService {
 
   /**
    * Manually trigger a job.
+   *
+   * Returns `{ status: 'skipped', reason }` without invoking the callback when
+   * the job is not due (`mode: 'due'`), is already in flight
+   * (`'already running'`), or was removed before the claim landed
+   * (`'removed'`). Before the phase split a forced run against an in-flight job
+   * launched a second concurrent invocation; refusing it is AC4 of #34.
+   *
+   * CONCURRENCY: the same job is bounded to one in-flight invocation on every
+   * path, and the timer path invokes due jobs one at a time. `run()` fan-out
+   * across DIFFERENT jobs is deliberately unbounded - N concurrent `run()`
+   * calls produce N concurrent consumer callbacks. Before the phase split
+   * these serialized behind the module-global lock; that serialization was the
+   * bug, not the feature (one hung callback wedged every other caller), so it
+   * is not being restored here. The fan-out is caller-driven: it is bounded by
+   * how many times the consumer chooses to call `run()`, exactly like any other
+   * async API, and the scheduler never produces it on its own. A consumer that
+   * exposes `run()` over HTTP or a CLI owns that bound the same way it owns
+   * request concurrency for every other handler. A per-invoke bound inside the
+   * service is tracked separately (#35).
    */
   async run(id: string, mode: 'due' | 'force' = 'force'): Promise<ExecuteResult> {
     const job = this.jobs.get(id);
@@ -395,7 +414,8 @@ export default class CronService {
   }
 
   /**
-   * Phase 1 - claim. Must be called while holding the lock.
+   * Phase 1 - claim. Must be called while holding the lock (`locked()`, whose
+   * chain is module-global and therefore shared across CronService instances).
    *
    * Returns `null` on a successful claim, or the reason the claim was refused.
    * "already running" is what makes a second `run()` report a skip instead of

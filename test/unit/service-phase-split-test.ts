@@ -652,7 +652,12 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.false(service.running, 'guard: the scheduler released and re-armed');
     });
 
-    test('a job removed by its own callback is not resurrected by the settle phase', async function (assert) {
+    // GUARD — its load-bearing assertions pass against dev too, because the
+    // inner remove() deadlocks there and settle never runs at all. Falsified
+    // instead by stubbing out settleJob's identity guard on this tree, which
+    // yields "settle left no heap entry: actual 1, expected 0" and
+    // "no run-log entry: actual 1, expected 0".
+    test('guard: a job removed by its own callback is not resurrected by the settle phase', async function (assert) {
       let innerRemoveSettled = false;
       let innerError: string | null = null;
 
