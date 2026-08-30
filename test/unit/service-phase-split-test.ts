@@ -338,6 +338,79 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is still scheduled');
     });
+
+    test('production logging actually emits a line, it does not merely fail to throw', async function (assert) {
+      // The BLOCKER's logging fix has two halves: self-register the cron log
+      // type, and no-op if it is still not callable. The tests above assert
+      // only that logging does not THROW, which pins the second half and leaves
+      // the first free — delete the `defineType` self-registration and a
+      // consumer wiring CronService directly gets zero cron log lines forever
+      // with `cron.log: true`, with a green suite. This repo has already
+      // shipped silently-dead cron logging once (#42).
+      //
+      // `withProductionLogging()` deletes `log.cron` first, so the registration
+      // has to actually happen here rather than being inherited from an earlier
+      // test — this is not pass-by-construction.
+      const restoreLogging = withProductionLogging();
+      const emitted: string[] = [];
+      const consoleLog = sinon.stub(console, 'log').callsFake((...args: unknown[]) => {
+        emitted.push(args.map(arg => String(arg)).join(' '));
+      });
+
+      try {
+        service.onJobDue = () => { throw new Error('callback blew up'); };
+
+        await service.start();
+        const job = await service.add({ name: 'Emits A Line', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+        await service.run(job.id, 'force');
+
+        assert.strictEqual(
+          typeof (log as unknown as Record<string, unknown>).cron, 'function',
+          'log() self-registered the cron type rather than silently skipping every message',
+        );
+        assert.true(
+          emitted.some(line => line.includes('Emits A Line')),
+          'the cron log line reached the transport — logging is not silently dead',
+        );
+      } finally {
+        consoleLog.restore();
+        restoreLogging();
+      }
+    });
+
+    test('log() no-ops when the configured method cannot be registered as a function', async function (assert) {
+      // `defineType` only creates a convenience method when the name is free
+      // (`if (!this[type])` in @stonyx/logs). A `logMethod` naming an existing
+      // non-function property therefore survives self-registration as a
+      // non-callable, and calling it would throw from inside the
+      // error-reporting path — the exact shape of the BLOCKER. This is what the
+      // `typeof method !== 'function'` return is for; the self-registration
+      // above cannot reach it, which is why it needs its own test.
+      const restoreLogging = withProductionLogging();
+      const logRecord = log as unknown as Record<string, unknown>;
+      const previousMethod = config.cron.logMethod;
+
+      try {
+        config.cron.logMethod = 'options';
+
+        assert.notStrictEqual(logRecord.options, undefined, 'precondition: the configured name is an existing property');
+        assert.notStrictEqual(typeof logRecord.options, 'function', 'precondition: and it is not callable');
+
+        let threw: unknown;
+        try {
+          service.log('a message with nowhere to go');
+        } catch (err: unknown) {
+          threw = err;
+        }
+
+        assert.strictEqual(threw, undefined, 'log() returned quietly instead of throwing from the reporting path');
+        assert.notStrictEqual(typeof logRecord.options, 'function', 'defineType did not overwrite the existing property');
+      } finally {
+        config.cron.logMethod = previousMethod;
+        restoreLogging();
+      }
+    });
   });
 
   module('CRITICAL — a resolved remove() means the callback will not fire', function () {
@@ -538,6 +611,44 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(result.value()?.status, 'skipped', 'run() reported a skip');
       assert.strictEqual(result.value()?.reason, 'removed', 'run() reported reason "removed"');
       assert.strictEqual(service.get(job.id), null, 'the job stays removed');
+    });
+
+    test('a stale claim must not unschedule the replacement that now owns its id', async function (assert) {
+      // The claim phase's own identity guard, reached through the published
+      // `executeJob(job)` entry point with an object that is no longer the
+      // registered one. Without it the claim runs `removeFromHeap(job.id)` for
+      // an id that now belongs to a replacement — the same failure mode as the
+      // settle-side HIGH above, relocated to phase 1.
+      //
+      // The refusal test above does NOT cover this: it asserts only on run()'s
+      // return value, and the membership re-check one step later produces the
+      // identical `{ status: 'skipped', reason: 'removed' }`. Two guards, one
+      // observable — so this test asserts on the heap, which only the claim
+      // phase can damage.
+      service.onJobDue = () => ({ status: 'ok' });
+
+      await service.start();
+      const job = await service.add({ name: 'Original', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+      const stale = service.get(job.id) as Job;
+
+      await service.remove(job.id);
+
+      const replacement: Job = {
+        ...job,
+        name: 'Replacement',
+        state: { ...job.state, runningAtMs: undefined, nextRunAtMs: Date.now() + 3_600_000 },
+      };
+      service.stop();
+      await service.start([replacement]);
+
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: the replacement is armed with one heap entry');
+
+      const result = await service.executeJob(stale);
+
+      assert.strictEqual(result.reason, 'removed', 'the stale object was refused');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the stale claim did not unschedule the replacement');
+      assert.strictEqual(service.status().nextWakeAtMs, replacement.state.nextRunAtMs, 'the scheduler still wakes for the replacement');
+      assert.strictEqual(stale.state.runningAtMs, undefined, 'the stale orphan was not left marked running');
     });
   });
 
