@@ -49,7 +49,8 @@ interface ExecuteResult {
   summary?: string;
   durationMs?: number;
   deleted?: boolean;
-  reason?: string;
+  /** Only set when `status` is `'skipped'`. */
+  reason?: 'not due' | 'already running' | 'removed';
 }
 
 interface ServiceStatus {
@@ -330,9 +331,19 @@ export default class CronService {
   async executeJob(job: Job, alreadyClaimed = false): Promise<ExecuteResult> {
     // -- Phase 1: claim (locked) --
     if (!alreadyClaimed) {
-      const claimed = await locked(() => this.claimJob(job));
-      if (!claimed) return { status: 'skipped', reason: 'already running' };
+      const refusal = await locked(() => this.claimJob(job));
+      if (refusal) return { status: 'skipped', reason: refusal };
     }
+
+    // Membership re-check. The claim and the invoke are no longer in the same
+    // critical section, and sibling callbacks run unlocked, so a `remove()` can
+    // land in between AND RESOLVE - it used to deadlock. A resolved `remove()`
+    // must keep meaning "this callback will not fire": settleJob's identity
+    // guard only cleans up afterwards, by which point the side effect has
+    // already happened. Identity, not id, so a removed-then-replaced key is
+    // caught too. Deliberately synchronous with the `onJobDue` call below -
+    // nothing can interleave between this check and the invocation.
+    if (this.jobs.get(job.id) !== job) return { status: 'skipped', reason: 'removed' };
 
     const startMs = Date.now();
     let status: string = 'ok';
@@ -373,18 +384,25 @@ export default class CronService {
   /**
    * Phase 1 - claim. Must be called while holding the lock.
    *
-   * Returns false if the job is already running, so a second `run()` reports
-   * "already running" instead of launching a concurrent invocation. Detaching
-   * from the heap here (rather than relying on phase 3 to push a fresh entry)
-   * is what keeps manual runs from permanently duplicating heap entries.
+   * Returns `null` on a successful claim, or the reason the claim was refused.
+   * "already running" is what makes a second `run()` report a skip instead of
+   * launching a concurrent invocation. "removed" covers the job being deleted
+   * between `run()`'s unlocked lookup and this lock turn - claiming then would
+   * `markRunning` an orphan and, worse, `removeFromHeap` an id that may now
+   * belong to a replacement.
+   *
+   * Detaching from the heap here (rather than relying on phase 3 to push a
+   * fresh entry) is what keeps manual runs from permanently duplicating heap
+   * entries.
    */
-  claimJob(job: Job): boolean {
-    if (job.state.runningAtMs) return false;
+  claimJob(job: Job): 'already running' | 'removed' | null {
+    if (this.jobs.get(job.id) !== job) return 'removed';
+    if (job.state.runningAtMs) return 'already running';
 
     markRunning(job);
     this.removeFromHeap(job.id);
 
-    return true;
+    return null;
   }
 
   /**
