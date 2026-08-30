@@ -511,6 +511,124 @@ module('CronService — phase split (#34)', function (hooks) {
     });
   });
 
+  module('HIGH — settle/claim mechanisms are individually falsifiable', function () {
+    test('the claim phase detaches the job from the heap for the whole unlocked window', async function (assert) {
+      // Pins claimJob's `removeFromHeap` on its own. A6 only goes red when
+      // BOTH this line and settle's pre-reinsert removal are deleted, so the
+      // PR body's attribution of the duplicate-entry fix to the claim-phase
+      // detach was previously untested.
+      let release: (() => void) | undefined;
+      let entriesDuringWindow = -1;
+
+      service.onJobDue = (job) => new Promise<void>(resolve => {
+        entriesDuringWindow = heapEntriesFor(service, job.id);
+        release = () => resolve();
+      });
+
+      await service.start();
+      const job = await service.add({ name: 'Claimed', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: one heap entry after add');
+
+      const inFlight = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.strictEqual(entriesDuringWindow, 0, 'the claim detached the job before the callback ran');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'the job stays detached for the whole unlocked window');
+
+      release?.();
+      await clock.tickAsync(0);
+
+      assert.true(inFlight.settled(), 'the run settled');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle re-attached exactly one entry');
+    });
+
+    test('a callback that re-schedules its own job leaves exactly one heap entry', async function (assert) {
+      // Pins settle's pre-reinsert `removeFromHeap`. A9 cannot: it drives the
+      // job through the timer, and the duplicate's stale nextTrigger is in the
+      // past, so the very next tick pops and discards it before the assertion
+      // runs. The run() path has no such tick, so the duplicate survives to be
+      // observed.
+      service.onJobDue = async (job) => {
+        await service.update(job.id, { name: 'Rescheduled From Inside' });
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Self Rescheduler', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await service.run(job.id, 'force');
+
+      assert.strictEqual(service.get(job.id)?.name, 'Rescheduled From Inside', 'precondition: the callback did re-schedule its own job');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle dropped the callback-pushed entry before re-inserting');
+      assert.strictEqual(service.status().nextWakeAtMs, service.get(job.id)?.state.nextRunAtMs, 'the surviving entry is the post-settle one, not the stale one');
+    });
+
+    test('a one-shot auto-delete drops a heap entry its own callback pushed', async function (assert) {
+      // Pins the `deleteAfterRun` branch's `removeFromHeap`. Reachable exactly
+      // because the callback runs unlocked: it can update() itself back onto
+      // the heap moments before settle deletes the job.
+      service.onJobDue = async (job) => {
+        await service.update(job.id, { name: 'Touched From Inside' });
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const job = await service.add({
+        name: 'Once',
+        schedule: { kind: 'at', at: future },
+        payload: { ...PAYLOAD },
+        deleteAfterRun: true,
+      });
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.deleted, true, 'precondition: the one-shot was auto-deleted');
+      assert.strictEqual(service.get(job.id), null, 'the job is gone from the registry');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'no phantom heap entry survives for the deleted job');
+      assert.strictEqual(service.status().nextWakeAtMs, undefined, 'the scheduler has no wake queued for a job that no longer exists');
+    });
+
+    test('settle re-arms a scheduler whose pending timer expired during the unlocked window', async function (assert) {
+      // Pins settle's `armTimer()`. run() has no `finally { armTimer() }` of
+      // its own, and the max-delay timer that was pending when the claim
+      // detached the job fires against an empty heap and arms nothing — so
+      // without this the job never runs again.
+      const fired: string[] = [];
+      let release: (() => void) | undefined;
+      let gated = true;
+
+      service.onJobDue = (job) => {
+        fired.push(job.name);
+        if (!gated) return { status: 'ok' };
+        gated = false;
+        return new Promise<void>(resolve => { release = () => resolve(); });
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Outlives Its Timer', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const inFlight = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'precondition: the claim detached the only heap entry');
+
+      // The pending max-delay wake fires against an empty heap; armTimer's
+      // `if (!peek) return` leaves nothing scheduled.
+      await clock.tickAsync(MAX_TIMER_DELAY_MS + 1_000);
+      assert.strictEqual(clock.countTimers(), 0, 'precondition: no timer is pending while the callback is in flight');
+
+      release?.();
+      await clock.tickAsync(0);
+
+      assert.true(inFlight.settled(), 'the run settled');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle re-inserted the heap entry');
+      assert.strictEqual(clock.countTimers(), 1, 'settle left the scheduler armed');
+
+      await clock.tickAsync(3_600_001);
+      assert.deepEqual(fired, ['Outlives Its Timer', 'Outlives Its Timer'], 'the job fired again on schedule');
+    });
+  });
+
   module('regression guards', function () {
     // GUARD — passes against dev too. Present so the phase split cannot
     // silently break the happy path it refactors.
