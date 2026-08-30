@@ -226,6 +226,24 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
     });
   });
 
+  module('SME BLOCKER 2 — the in-flight guard is released on the async path', function () {
+    // GUARD — passes against the current head. The head *has* a release; nothing
+    // proved it, which is the finding. Mutation-proven below rather than against
+    // `dev`: deleting the release leaves the pre-fix suite at 146 pass / 0 fail.
+    test('an async job that settles fires again on its next tick', async function (assert) {
+      const callback = sinon.stub().callsFake(async () => {});
+
+      cron.register('asave', callback, '1');
+
+      await clock.tickAsync(1100);
+      assert.strictEqual(callback.callCount, 1, 'precondition: fired once');
+
+      await clock.tickAsync(1100);
+      assert.strictEqual(callback.callCount, 2, 'async job fired again after its first invocation settled');
+      assert.strictEqual(cron.jobs['asave']?.runningAtMs, undefined, 'the in-flight flag was released after the invocation settled');
+    });
+  });
+
   module('SME HIGH 3 — an invocation can only release its own guard', function () {
     // The measured bypass: `unregister` clears the key, a replacement starts, and
     // then the ABANDONED invocation settles and clears the flag the replacement
