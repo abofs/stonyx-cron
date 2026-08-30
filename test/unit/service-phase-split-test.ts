@@ -20,6 +20,8 @@
  */
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
+import config from 'stonyx/config';
+import log from 'stonyx/log';
 import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
 import { resetLock } from '../../src/locked.js';
@@ -49,6 +51,48 @@ function probe<T>(promise: Promise<T>): { settled: () => boolean; value: () => T
   );
 
   return { settled: () => done, value: () => value, error: () => error };
+}
+
+/**
+ * Reproduce the production logging environment inside the suite.
+ *
+ * `test/config/environment.ts` sets `cron: { log: false }`, so `CronService.log`
+ * early-returns in all 147 pre-existing tests and its body has zero coverage.
+ * Production defaults to `log: true` (`config/environment.js`), and `log.cron`
+ * only exists once `log.defineType('cron', ...)` has run — which happens in
+ * `Cron.init()` (`src/main.ts`), a *different class* that a consumer wiring
+ * `CronService` directly never instantiates. `src/types/stonyx.d.ts:19` declares
+ * `cron(message: string): void` unconditionally, so the type system actively
+ * hides this.
+ *
+ * Returns a restore function; always call it in a `finally`.
+ */
+function withProductionLogging(): () => void {
+  const previousLogFlag = config.cron.log;
+  const logRecord = log as unknown as Record<string, unknown>;
+  const hadCron = Object.prototype.hasOwnProperty.call(logRecord, 'cron');
+  const previousCron = logRecord.cron;
+
+  config.cron.log = true;
+  delete logRecord.cron;
+
+  return () => {
+    config.cron.log = previousLogFlag;
+    if (hadCron) logRecord.cron = previousCron;
+    else delete logRecord.cron;
+  };
+}
+
+/** Swallow unhandled rejections for the duration of a test and report them. */
+function captureUnhandledRejections(): { seen: () => unknown[]; restore: () => void } {
+  const seen: unknown[] = [];
+  const handler = (reason: unknown) => { seen.push(reason); };
+  process.on('unhandledRejection', handler);
+
+  return {
+    seen: () => seen,
+    restore: () => { process.off('unhandledRejection', handler); },
+  };
 }
 
 module('CronService — phase split (#34)', function (hooks) {
@@ -177,6 +221,97 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(second.value()?.status, 'skipped', 'second run reports skipped');
       assert.strictEqual(second.value()?.reason, 'already running', 'second run reports "already running"');
       assert.strictEqual(invocations, 1, 'the callback was not re-entered concurrently');
+    });
+  });
+
+  module('BLOCKER — a claim always gets a settle', function () {
+    test('a throwing callback with production logging enabled still settles, and its batch siblings still run', async function (assert) {
+      const restoreLogging = withProductionLogging();
+      const rejections = captureUnhandledRejections();
+      const invoked: string[] = [];
+
+      try {
+        service.onJobDue = (job) => {
+          invoked.push(job.name);
+          if (job.name === 'Thrower') throw new Error('callback blew up');
+          return { status: 'ok' };
+        };
+
+        await service.start();
+        const thrower = await service.add({ name: 'Thrower', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+        const sibling = await service.add({ name: 'Sibling', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.deepEqual(rejections.seen(), [], 'nothing escaped as an unhandled rejection');
+        assert.deepEqual(invoked, ['Thrower', 'Sibling'], 'one job throwing does not abort the rest of the batch');
+
+        assert.strictEqual(service.get(thrower.id)?.state.runningAtMs, undefined, 'the thrower settled — runningAtMs was cleared');
+        assert.strictEqual(service.get(thrower.id)?.state.lastStatus, 'error', 'the thrower settled with an error status');
+        assert.strictEqual(heapEntriesFor(service, thrower.id), 1, 'the thrower is back on the heap and will run again');
+
+        assert.strictEqual(service.get(sibling.id)?.state.runningAtMs, undefined, 'the sibling settled — runningAtMs was cleared');
+        assert.strictEqual(heapEntriesFor(service, sibling.id), 1, 'the sibling is back on the heap');
+
+        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+      } finally {
+        rejections.restore();
+        restoreLogging();
+      }
+    });
+
+    test('run() with production logging enabled does not permanently unschedule a job whose callback throws', async function (assert) {
+      const restoreLogging = withProductionLogging();
+      const rejections = captureUnhandledRejections();
+
+      try {
+        service.onJobDue = () => { throw new Error('callback blew up'); };
+
+        await service.start();
+        const job = await service.add({ name: 'Manual Thrower', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: armed with one heap entry');
+
+        const result = probe<RunResult>(service.run(job.id, 'force'));
+        await clock.tickAsync(0);
+
+        assert.true(result.settled(), 'run() settled');
+        assert.strictEqual(result.error(), undefined, 'run() resolved rather than rejecting');
+        assert.strictEqual(result.value()?.status, 'error', 'run() reported the callback error');
+        assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is still scheduled — the claim did not strand it off the heap');
+        assert.deepEqual(rejections.seen(), [], 'nothing escaped as an unhandled rejection');
+      } finally {
+        rejections.restore();
+        restoreLogging();
+      }
+    });
+
+    test('settle still runs when the catch handler itself throws', async function (assert) {
+      const rejections = captureUnhandledRejections();
+
+      try {
+        // A value the catch handler cannot stringify: `err instanceof Error` is
+        // false, so it falls through to `String(err)`, which throws
+        // "Cannot convert object to primitive value" on a null-prototype
+        // object. This exercises the try/finally independently of the logging
+        // defect above — nothing about `config.cron.log` is touched here.
+        service.onJobDue = () => { throw Object.create(null) as never; };
+
+        await service.start();
+        const job = await service.add({ name: 'Unstringifiable', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite a non-local exit from phase 2');
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
+        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+        assert.deepEqual(rejections.seen(), [], 'nothing escaped as an unhandled rejection');
+      } finally {
+        rejections.restore();
+      }
     });
   });
 
