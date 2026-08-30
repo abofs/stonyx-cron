@@ -29,6 +29,20 @@ import MinHeap, { type HeapItem } from './min-heap.js';
  */
 const MIN_INTERVAL_SECONDS = 1;
 
+/**
+ * Render an unknown thrown value as log text.
+ *
+ * `@stonyx/logs` reads a second argument as `logToFile`, not as a format
+ * argument, so `log.error(message, err)` discards the error entirely *and*
+ * forces a disk write on every failure. The error has to be interpolated into
+ * the message instead — the shape `CronService.executeJob` already uses.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.stack ?? `${err.name}: ${err.message}`;
+
+  return String(err);
+}
+
 interface CronJob extends HeapItem {
   callback: () => void | Promise<void>;
   interval: string;
@@ -122,7 +136,7 @@ export default class Cron {
     // the job object, so a re-registered key gets a fresh object and runs
     // immediately, while the abandoned invocation can only ever release itself.
     if (job.runningAtMs !== undefined) {
-      log.warn(`Cron job "${key}" is still running; skipping this tick`);
+      this.report('warn', `Cron job ${JSON.stringify(key)} is still running; skipping this tick`);
       return;
     }
 
@@ -133,16 +147,43 @@ export default class Cron {
 
       if (result && typeof (result as Promise<void>).then === 'function') {
         Promise.resolve(result)
-          .catch(err => log.error(`Cron job "${key}" ${context}`, err))
-          .finally(() => this.release(job));
+          .catch((err: unknown) => {
+            // Braces matter: returning `report`'s value would put it back into
+            // the chain, and `.finally` passes a rejection straight through.
+            this.report('error', `Cron job ${JSON.stringify(key)} ${context} ${describeError(err)}`);
+          })
+          .finally(() => { this.release(job); })
+          // Backstop: a throw inside the error handler or the release must not
+          // re-create the unhandled rejection this helper exists to prevent.
+          .catch(() => {});
 
         return;
       }
 
       this.release(job);
-    } catch (err) {
+    } catch (err: unknown) {
       this.release(job);
-      log.error(`Cron job "${key}" ${context}`, err);
+      this.report('error', `Cron job ${JSON.stringify(key)} ${context} ${describeError(err)}`);
+    }
+  }
+
+  /**
+   * Report a scheduler-level message without ever letting the logger's own
+   * failure reach the caller.
+   *
+   * `@stonyx/logs` convenience methods return a promise and write to disk
+   * through an unguarded `mkdirSync` + `fsp.appendFile`. On a read-only or full
+   * log volume that promise rejects; an unobserved rejection raised from inside
+   * the handler that exists to prevent unhandled rejections would re-create
+   * exactly the defect this class was fixed for (measured: exit code 1).
+   */
+  report(level: 'error' | 'warn', message: string): void {
+    try {
+      const result = level === 'error' ? log.error(message) : log.warn(message);
+
+      void Promise.resolve(result).catch(() => {});
+    } catch {
+      // Nowhere left to report to; the logger must never stop the scheduler.
     }
   }
 
@@ -171,7 +212,8 @@ export default class Cron {
     }
 
     if (parseInt(interval, 10) < MIN_INTERVAL_SECONDS) {
-      log.warn(
+      this.report(
+        'warn',
         `Cron job ${JSON.stringify(key)} interval ${JSON.stringify(interval)} is below the `
         + `${MIN_INTERVAL_SECONDS}s floor; clamping to ${MIN_INTERVAL_SECONDS}s`,
       );

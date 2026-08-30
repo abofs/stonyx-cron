@@ -294,4 +294,39 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.strictEqual(fresh.callCount, 1, 're-registered key runs again while the abandoned invocation is still pending');
     });
   });
+
+  module('SME HIGH 4 — the error-reporting path cannot kill the process', function () {
+    test('the error is logged as message text, not passed into the logToFile slot', async function (assert) {
+      const errorSpy = sinon.stub(log, 'error');
+
+      cron.register('detail', async () => { throw new Error('async boom'); }, '300', true);
+
+      await clock.tickAsync(0);
+      await realTick();
+
+      assert.strictEqual(errorSpy.callCount, 1, 'precondition: log.error was called exactly once');
+      assert.strictEqual(
+        errorSpy.firstCall.args.length,
+        1,
+        '@stonyx/logs reads argument 2 as `logToFile` — log.error must be called with a single interpolated string',
+      );
+      assert.true(
+        String(errorSpy.firstCall.args[0]).includes('async boom'),
+        'the error text reaches the operator instead of being swallowed as a boolean',
+      );
+    });
+
+    test('a rejecting logger cannot re-create the unhandled rejection this fix prevents', async function (assert) {
+      sinon.stub(log, 'error').rejects(new Error('EISDIR: illegal operation on a directory'));
+
+      cron.register('logfail', async () => { throw new Error('job boom'); }, '300', true);
+
+      await clock.tickAsync(0);
+      await realTick();
+      await realTick();
+
+      // Asserted here as well as in afterEach so the failure names this path.
+      assert.strictEqual(rejections.length, 0, 'a failure inside the error handler did not escape as an unhandled rejection');
+    });
+  });
 });
