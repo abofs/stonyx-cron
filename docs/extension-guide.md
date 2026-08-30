@@ -51,7 +51,9 @@ if (this.items[idx].nextTrigger < this.items[parentIdx].nextTrigger ||
 // In main.js setNextTrigger:
 setNextTrigger(job) {
   const priorityOffset = job.priority || 0;
-  job.nextTrigger = getTimestamp() + parseInt(job.interval, 10) - priorityOffset;
+  // `parseInterval` (never `parseInt`) — it rejects a partially numeric
+  // interval and applies the 1 second floor the drain loop depends on.
+  job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? 1) - priorityOffset;
 }
 ```
 
@@ -84,20 +86,18 @@ register(key, callback, interval, runOnInit=false) {
   // ...
 }
 
-// Update stats in runDueJobs:
-async runDueJobs() {
-  // ...
-  try {
-    await job.callback();
-    job.stats.runCount++;
-    job.stats.lastRun = getTimestamp();
-  } catch (err) {
-    job.stats.errorCount++;
-    job.stats.lastError = err.message;
-    log.error(`Cron job "${job.key}" failed:`, err);
-  }
-  // ...
+// Record stats around safeInvoke — do NOT add a second callback call site, and
+// do NOT await the callback (see docs/architecture.md § Error Handling):
+safeInvoke(job, runOnInit = false) {
+  const before = job.stats.runCount;
+  job.stats.lastRun = getTimestamp();
+  job.stats.runCount++;
+
+  super.safeInvoke(job, runOnInit);
 }
+
+// Errors are already caught inside safeInvoke; hook error stats there rather
+// than wrapping the callback again.
 
 // Add method to retrieve stats:
 getJobStats(key) {
@@ -152,19 +152,19 @@ register(key, callback, interval, runOnInit=false, oneTime=false) {
   // ...
 }
 
-// Modify runDueJobs to unregister one-time jobs:
-async runDueJobs() {
+// Modify runDueJobs to unregister one-time jobs.
+//
+// Two invariants to preserve: reschedule BEFORE invoking, and invoke through
+// safeInvoke without awaiting. The drain loop has no suspension point, so its
+// only exit condition is `nextTrigger > now`.
+runDueJobs() {
   const now = getTimestamp();
   const { heap } = this;
 
-  while (!heap.isEmpty() && heap.peek().nextTrigger <= now) {
+  while (!heap.isEmpty()) {
+    const next = heap.peek();
+    if (!next || next.nextTrigger > now) break;
     const job = heap.pop();
-
-    try {
-      await job.callback();
-    } catch (err) {
-      log.error(`Cron job "${job.key}" failed:`, err);
-    }
 
     if (job.oneTime) {
       delete this.jobs[job.key];  // Don't reschedule
@@ -173,6 +173,8 @@ async runDueJobs() {
       this.setNextTrigger(job);
       heap.push(job);
     }
+
+    this.safeInvoke(job);
   }
 
   this.scheduleNextRun();
@@ -220,23 +222,38 @@ console.log(cron1 === cron2);  // true - same instance!
 **Implication:** Registering jobs on any instance affects the same scheduler.
 
 ### Job Callback Async Handling
-**Pitfall:** Not awaiting async callbacks
+**Pitfall:** assuming the scheduler waits for your callback. It does not.
 
-**Correct:**
+The scheduler invokes callbacks fire-and-forget. It reschedules the job *before*
+invoking it and never awaits the result, so one callback can never starve
+another. Rejections are still caught and logged — `safeInvoke` attaches a
+`.catch()` to any thenable the callback returns.
+
+**Correct — return the promise so `Cron` can observe it:**
 ```javascript
 cron.register('job', async () => {
   await someAsyncOperation();
-}, 10);
+}, '10');
 ```
 
-The scheduler awaits the callback, so errors are caught properly.
-
-**Wrong:**
+**Wrong — the promise is not returned, so `Cron` cannot catch it:**
 ```javascript
 cron.register('job', () => {
-  someAsyncOperation();  // Not awaited - errors won't be caught!
-}, 10);
+  someAsyncOperation();  // floating: errors escape safeInvoke's .catch()
+}, '10');
 ```
+
+**Two consequences you own as the caller:**
+
+- **Your callback must settle.** A job whose promise never settles is skipped on
+  every subsequent tick (one warning per stuck run) and never runs again for the
+  lifetime of the process. `Cron` deliberately provides no timeout — bound your
+  own I/O.
+- **`interval` is whole seconds, as a string, and must be wholly numeric.**
+  `register` throws a `TypeError` on anything else — including a partially
+  numeric value: `'1h'`, `'30s'` and `'5m'` are rejected, not truncated to 1, 30
+  and 5. Cron expressions belong to `CronService`. A wholly numeric value below
+  `1` is clamped to the 1 second floor with a warning instead.
 
 ### Heap Reference Equality
 **Pitfall:** Modifying job objects outside the scheduler
