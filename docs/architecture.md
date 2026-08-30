@@ -56,6 +56,12 @@ guard with it. It mirrors `job.state.runningAtMs` in the service tier
 - Clears existing timer
 - Peeks at next job in heap
 - Calculates delay: `(nextTrigger - now) * 1000` (converts seconds to milliseconds)
+- Clamps that delay to `setTimeout`'s 32-bit range (2,147,483,647 ms, ~24.9 days).
+  An unclamped delay overflows, is truncated to 1 ms, and re-arms every
+  millisecond while the job never comes due — `'86400000'` (a day expressed in
+  *milliseconds*) measures ~790 wakeups a second and ~8 GB of stderr a day.
+  Clamping re-arms the remainder on the next pass, so a long interval works
+  rather than spinning.
 - Sets setTimeout for next job execution
 
 **`runDueJobs()`**

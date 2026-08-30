@@ -30,6 +30,21 @@ import MinHeap, { type HeapItem } from './min-heap.js';
 const MIN_INTERVAL_SECONDS = 1;
 
 /**
+ * Ceiling for a single `setTimeout` delay, in milliseconds (2^31 - 1, ~24.9
+ * days).
+ *
+ * Node stores a timer's delay in a 32-bit signed int. A larger value overflows,
+ * is truncated to 1 ms and emits a `TimeoutOverflowWarning`, so `scheduleNextRun`
+ * would re-arm every millisecond while the job never came due — measured at
+ * `'86400000'` (a day expressed in *milliseconds*, the plausible typo): ~790
+ * wakeups a second and ~8 GB of stderr a day from a job that never runs.
+ *
+ * Long intervals are clamped and re-armed rather than rejected, so they work
+ * instead of merely failing loudly.
+ */
+const TIMEOUT_MAX_MS = 2_147_483_647;
+
+/**
  * Render an unknown thrown value as log text.
  *
  * `@stonyx/logs` reads a second argument as `logToFile`, not as a format
@@ -90,7 +105,11 @@ export default class Cron {
 
     const nextJob = heap.peek();
     if (!nextJob) return;
-    const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
+    // Clamped to `setTimeout`'s range. `runDueJobs` finds nothing due when the
+    // clamp fires, breaks out of the drain loop, and re-arms the remainder — so
+    // an interval past the ceiling costs one extra wakeup every ~24.9 days
+    // instead of one every millisecond, forever.
+    const delay = Math.min(Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000, TIMEOUT_MAX_MS);
 
     this.timer = setTimeout(() => this.runDueJobs(), delay);
   }

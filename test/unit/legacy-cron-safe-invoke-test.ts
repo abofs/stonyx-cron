@@ -442,6 +442,53 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.strictEqual(skips.length, 1, 'exactly one skip warning across the five skipped ticks');
     });
   });
+  module('SME WARNING — a long interval must not overflow setTimeout', function () {
+    // `delay` is milliseconds. Above `TIMEOUT_MAX` (2,147,483,647 ms, ~24.9
+    // days) Node truncates the timer to 1 ms, so `scheduleNextRun` re-arms
+    // every millisecond forever while the job never fires. Measured
+    // out-of-suite at `'86400000'` — a day expressed in *milliseconds* —
+    // 3,163 wakeups and ~389 KB of `TimeoutOverflowWarning` stderr per 4 s,
+    // roughly 8 GB/day, from one job that then never runs.
+    //
+    // Pre-existing: `scheduleNextRun` is byte-identical at `dev`, which
+    // measures the same. It is taken here because it is the same
+    // unit-confusion class the `'1h'` rejection exists to catch, arriving
+    // through a value that parses cleanly as a number — shipping a validator
+    // that rejects `'1h'` while accepting `'86400000'` invites the wrong
+    // conclusion about what has been made safe.
+    //
+    // `@sinonjs/fake-timers` reproduces the truncation faithfully
+    // (`fake-timers-src.js`: `timer.delay = timer.delay > maxTimeout ? 1 :
+    // timer.delay`), so both assertions below discriminate in-suite.
+    test('an interval beyond setTimeout\'s range does not spin the drain loop', async function (assert) {
+      const drain = sinon.spy(cron, 'runDueJobs');
+      const callback = sinon.spy();
+
+      cron.register('overflow', callback, '86400000');
+
+      await clock.tickAsync(5000);
+
+      assert.strictEqual(drain.callCount, 0, 'the drain loop did not wake once in 5s of fake time (untruncated: ~5,000 wakeups)');
+      assert.strictEqual(callback.callCount, 0, 'and the job was not run early');
+    });
+
+    // The other half: clamping must re-arm, not drop the job. A ceiling that
+    // ran the job at the clamp boundary would be a worse defect than the spin.
+    test('a long interval still fires exactly once, when it is actually due', async function (assert) {
+      const callback = sinon.spy();
+
+      // 2,147,484,000 ms — 353 ms past the ceiling, so it takes exactly two
+      // timer hops: one to the ceiling, one for the remainder.
+      cron.register('long', callback, '2147484');
+
+      await clock.nextAsync();
+      assert.strictEqual(callback.callCount, 0, 'the clamp re-armed rather than running the job early');
+
+      await clock.nextAsync();
+      assert.strictEqual(callback.callCount, 1, 'the job fired once, on its second hop, when actually due');
+    });
+  });
+
   module('SME WARNING — the documented same-tick overlap is pinned', function () {
     // README: "Two *different* jobs that fall due on the same tick may therefore
     // overlap." That was only incidentally exercised inside AC1; a regression
