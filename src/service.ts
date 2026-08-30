@@ -197,6 +197,10 @@ export default class CronService {
       return { status: 'skipped', reason: 'not due' };
     }
 
+    // Deliberately NOT wrapped in locked(): executeJob takes the lock itself
+    // for its claim and settle phases only. Wrapping here would re-create the
+    // wedge through a second door, since the callback would again be awaited
+    // while a lock is held.
     return this.executeJob(job);
   }
 
@@ -230,18 +234,26 @@ export default class CronService {
     this.running = true;
 
     try {
-      await locked(async () => {
+      // Phase 1 - claim (locked). Collecting due jobs pops them off the heap
+      // and marking them running makes them un-collectable by anyone else, so
+      // both must happen under the same lock.
+      const dueJobs = await locked(() => {
         const nowMs = Date.now();
-        const dueJobs = this.findDueJobs(nowMs);
+        const due = this.findDueJobs(nowMs);
 
-        for (const job of dueJobs) {
+        for (const job of due) {
           markRunning(job);
         }
 
-        for (const job of dueJobs) {
-          await this.executeJob(job);
-        }
+        return due;
       });
+
+      // Phases 2 and 3 run outside the claim lock. The consumer callback is
+      // awaited here holding no lock at all, so a callback that never settles
+      // cannot poison the lock chain.
+      for (const job of dueJobs) {
+        await this.executeJob(job, true);
+      }
     } finally {
       this.running = false;
       this.armTimer();
@@ -265,7 +277,29 @@ export default class CronService {
     return due;
   }
 
-  async executeJob(job: Job): Promise<ExecuteResult> {
+  /**
+   * Execute a job in three phases:
+   *
+   *   1. claim  (locked)   - take ownership of the job, detach it from the heap
+   *   2. invoke (UNLOCKED) - await the consumer callback
+   *   3. settle (locked)   - apply the result, log it, re-insert into the heap
+   *
+   * The critical section deliberately excludes phase 2. `onJobDue` is
+   * arbitrary, unbounded consumer code; awaiting it under the module-global
+   * lock is what wedged every subsequent `locked()` call (add/update/remove)
+   * when a callback never settled.
+   *
+   * `alreadyClaimed` is passed by `onTimer`, which performs the batch claim
+   * (findDueJobs + markRunning) for all due jobs under a single lock.
+   */
+  async executeJob(job: Job, alreadyClaimed = false): Promise<ExecuteResult> {
+    // -- Phase 1: claim (locked) --
+    if (!alreadyClaimed) {
+      const claimed = await locked(() => this.claimJob(job));
+      if (!claimed) return { status: 'skipped', reason: 'already running' };
+    }
+
+    // -- Phase 2: invoke (NOT locked) --
     const startMs = Date.now();
     let status: string = 'ok';
     let error: string | undefined;
@@ -288,6 +322,38 @@ export default class CronService {
 
     const durationMs = Date.now() - startMs;
 
+    // -- Phase 3: settle (locked) --
+    return locked(() => this.settleJob(job, status, error, summary, startMs, durationMs));
+  }
+
+  /**
+   * Phase 1 - claim. Must be called while holding the lock.
+   *
+   * Returns false if the job is already running, so a second `run()` reports
+   * "already running" instead of launching a concurrent invocation. Detaching
+   * from the heap here (rather than relying on phase 3 to push a fresh entry)
+   * is what keeps manual runs from permanently duplicating heap entries.
+   */
+  claimJob(job: Job): boolean {
+    if (job.state.runningAtMs) return false;
+
+    markRunning(job);
+    this.removeFromHeap(job.id);
+
+    return true;
+  }
+
+  /**
+   * Phase 3 - settle. Must be called while holding the lock.
+   */
+  settleJob(
+    job: Job,
+    status: string,
+    error: string | undefined,
+    summary: string | undefined,
+    startMs: number,
+    durationMs: number,
+  ): ExecuteResult {
     const validStatus = (status === 'ok' || status === 'error' || status === 'skipped') ? status : 'error';
     applyResult(job, validStatus, error, durationMs);
 
@@ -305,14 +371,24 @@ export default class CronService {
     // Handle one-shot auto-delete
     if (job.deleteAfterRun && status === 'ok' && !job.enabled) {
       this.jobs.delete(job.id);
+      this.removeFromHeap(job.id);
       this.runLog.removeJob(job.id);
+      this.armTimer();
       return { status, summary, deleted: true };
     }
 
-    // Re-insert into heap if still active
+    // Re-insert into heap if still active. The callback ran unlocked, so it
+    // may itself have added a heap entry for this job (via add/update); drop
+    // any such entry first to preserve one-entry-per-key.
+    this.removeFromHeap(job.id);
     if (job.enabled && job.state.nextRunAtMs) {
       this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
     }
+
+    // The claim phase detached this job from the heap, so a timer that fired
+    // during the unlocked invoke would have seen it missing. Re-arm here so a
+    // manual run() can never leave the scheduler without a pending wake.
+    this.armTimer();
 
     return { status, error, summary, durationMs };
   }
