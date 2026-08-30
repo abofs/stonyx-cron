@@ -54,6 +54,12 @@ interface CronJob extends HeapItem {
    * (`src/job.ts` `markRunning`/`applyResult`/`isDue`).
    */
   runningAtMs?: number;
+
+  /**
+   * True once a skip has been reported for the *current* invocation. Bounds the
+   * still-running warning to one line per stuck run instead of one per tick.
+   */
+  skipReported?: boolean;
 }
 
 export default class Cron {
@@ -136,11 +142,27 @@ export default class Cron {
     // the job object, so a re-registered key gets a fresh object and runs
     // immediately, while the abandoned invocation can only ever release itself.
     if (job.runningAtMs !== undefined) {
-      this.report('warn', `Cron job ${JSON.stringify(key)} is still running; skipping this tick`);
+      // Bounded: one line per stuck run, not one per tick. A permanently hung
+      // job is re-pushed and re-skipped every interval forever, which at the
+      // 1s interval this class's own tests use is ~86k log lines a day, per job
+      // — a disk-fill and ingest-cost vector on any deployment capturing stdout.
+      if (!job.skipReported) {
+        job.skipReported = true;
+
+        const runningForSeconds = Math.max(0, Math.round((Date.now() - job.runningAtMs) / 1000));
+
+        this.report(
+          'warn',
+          `Cron job ${JSON.stringify(key)} is still running after ${runningForSeconds}s; skipping this `
+          + 'tick and any further ticks until it settles (this warning is not repeated for this run)',
+        );
+      }
+
       return;
     }
 
     job.runningAtMs = Date.now();
+    job.skipReported = false;
 
     try {
       const result = job.callback();
@@ -190,6 +212,7 @@ export default class Cron {
   /** Release a job's in-flight guard. Only ever called for the job it belongs to. */
   release(job: CronJob): void {
     job.runningAtMs = undefined;
+    job.skipReported = false;
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {

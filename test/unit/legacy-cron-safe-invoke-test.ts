@@ -329,4 +329,20 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.strictEqual(rejections.length, 0, 'a failure inside the error handler did not escape as an unhandled rejection');
     });
   });
+
+  module('SME WARNING 6 — the skip warning is bounded', function () {
+    test('a permanently stuck job warns once per stuck run, not once per tick', async function (assert) {
+      const warnSpy = sinon.stub(log, 'warn');
+      const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+
+      cron.register('stuck', hang, '1');
+
+      await clock.tickAsync(6000);
+
+      assert.strictEqual(hang.callCount, 1, 'precondition: the job is stuck after a single invocation');
+
+      const skips = warnSpy.getCalls().filter(call => /still running/.test(String(call.args[0])));
+      assert.strictEqual(skips.length, 1, 'exactly one skip warning across the five skipped ticks');
+    });
+  });
 });
