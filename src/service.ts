@@ -298,12 +298,21 @@ export default class CronService {
           // heap - and only its own settle releases it, so aborting here would
           // strand every sibling permanently un-due.
           //
+          // Reported on an UNGATED channel. `this.log()` returns early when
+          // `config.cron.log` is false - a supported production setting - and a
+          // failure here permanently unschedules the job while `status()` keeps
+          // reporting the service healthy. Silent-and-healthy is the failure
+          // class the phase split exists to remove, so the one handler that
+          // survives it must not depend on a log flag. `log.error` is a Stonyx
+          // system log type, created in the Log constructor rather than by
+          // `defineType`, so it is always callable and never gated.
+          //
           // This is the outermost handler on the timer path, so it is the one
-          // that must not be able to throw. `log()` is public, overridable and
-          // can reach a file transport, so its own failure is swallowed here
-          // rather than being allowed to take the batch down.
+          // that must not be able to throw. `log` is a shared singleton whose
+          // transports can reach the filesystem, so its own failure is
+          // swallowed here rather than being allowed to take the batch down.
           try {
-            this.log(`Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`);
+            log.error(`Cron — Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`);
           } catch {
             // Nothing left to report to.
           }
