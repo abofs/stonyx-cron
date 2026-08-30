@@ -35,7 +35,13 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 |  `register`  | `key: string, callback: Function, interval: number, runOnInit?: boolean` | Register a new job with a given interval in seconds. If `runOnInit` is true, the job runs immediately upon registration. |
 | `unregister` |                               `key: string`                              | Remove a previously registered job.                                                                                      |
 
-> Callbacks are invoked fire-and-forget: `Cron` never waits for one to settle. Two *different* jobs that fall due on the same tick may therefore overlap, and a job that is still running when it next falls due is skipped for that tick (a warning is logged). Both synchronous throws and asynchronous rejections are caught and logged; neither can stop the scheduler.
+> **Callback semantics.** Callbacks are invoked fire-and-forget: `Cron` never waits for one to settle, and reschedules a job *before* invoking it. Two *different* jobs that fall due on the same tick may therefore overlap.
+>
+> A job that is still running when it next falls due is skipped — and **keeps** being skipped until that invocation settles. One warning is logged per stuck run (not per tick), including how long the invocation has been running. `Cron` provides no timeout by design, so **bounding your own callback is your responsibility**: a promise that never settles means that job never runs again for the lifetime of the process. Other jobs are unaffected.
+>
+> Synchronous throws and asynchronous rejections are both caught and reported through `log.error`, with the error's stack interpolated into the message. Neither can stop the scheduler.
+>
+> `interval` is **whole seconds, as a string**. `register` throws a `TypeError` on a value it cannot parse — in particular, this class does not accept cron expressions; use `CronService` (`@stonyx/cron/service`) for those. Values below `1` are clamped to `1` second with a warning.
 
 > `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
 

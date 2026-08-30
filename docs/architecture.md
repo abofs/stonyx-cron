@@ -14,12 +14,21 @@ timer = null;       // setTimeout handle for next scheduled run
 **Job Object Schema:**
 ```javascript
 {
-  key: string,           // Unique identifier for the job
-  callback: Function,    // Async function to execute
-  interval: number,      // Interval in seconds
-  nextTrigger: number    // Unix timestamp in seconds when job should run
+  key: string,            // Unique identifier for the job
+  callback: Function,     // Function to execute; may be sync or async
+  interval: string,       // Interval in whole seconds, as a string
+  nextTrigger: number,    // Unix timestamp in seconds when job should run
+  runningAtMs: number,    // ms timestamp of the in-flight invocation; undefined when idle
+  skipReported: boolean   // whether a still-running skip has been logged for this run
 }
 ```
+
+`runningAtMs` is the in-flight guard, and it lives **on the job object** rather
+than in a scheduler-level set keyed by job key. That is deliberate: object
+identity is invocation identity, so the settle handler of one invocation can
+only ever release the guard it set, and a job removed by `unregister` takes its
+guard with it. It mirrors `job.state.runningAtMs` in the service tier
+(`markRunning` / `applyResult` / `isDue` in `src/job.ts`).
 
 **Public Methods:**
 
@@ -27,8 +36,12 @@ timer = null;       // setTimeout handle for next scheduled run
 - Registers a new recurring job
 - `key` (string): Unique job identifier
 - `callback` (Function): Async function to execute on each trigger
-- `interval` (number): Time in seconds between executions
-- `runOnInit` (boolean): Whether to run callback immediately
+- `interval` (string): Whole seconds between executions. **Throws** a `TypeError`
+  if the value cannot be parsed as seconds — a cron expression belongs to
+  `CronService`, not to this class. Values below `1` are clamped to `1` with a
+  warning.
+- `runOnInit` (boolean): Whether to run callback immediately (through
+  `safeInvoke`, so a rejection is caught rather than fatal)
 
 **`unregister(key)`**
 - Removes a job from the scheduler
@@ -43,12 +56,27 @@ timer = null;       // setTimeout handle for next scheduled run
 
 **`runDueJobs()`**
 - Processes all jobs with `nextTrigger <= now`
-- Executes job callbacks with error handling
-- Reschedules each job after execution
+- Reschedules each job **before** invoking it, then invokes through `safeInvoke`
+- Never awaits the callback — see "Error Handling" below
+- Skips a job whose previous invocation has not settled (one warning per stuck run)
 - Calls `scheduleNextRun()` when done
 
+**`safeInvoke(job, runOnInit=false)`**
+- The one place this class invokes a consumer callback
+- Catches synchronous throws and asynchronous rejections identically
+- Acquires and releases the job's `runningAtMs` in-flight guard
+
+**`release(job)`** / **`report(level, message)`**
+- Internal helpers of `safeInvoke`: clear a job's guard, and log without letting
+  the logger's own failure escape as an unhandled rejection
+
+**`parseInterval(interval)`**
+- Parses an interval to whole seconds, floored at `1`; returns `null` if it
+  cannot be parsed at all
+
 **`setNextTrigger(job)`**
-- Updates job's `nextTrigger` to `now + interval`
+- Updates job's `nextTrigger` to `now + interval`, with the interval floored at
+  `1` second. The floor is load-bearing, not cosmetic — see "Error Handling"
 - Uses `getTimestamp()` which returns **seconds**, not milliseconds
 
 **`log(text, key=null)`**
@@ -157,24 +185,60 @@ if (config.cron?.log) log.cron(`${tag} - ${text}:`);
 - `log.error()` for error conditions
 
 ### Error Handling
-**Never let errors crash the scheduler:**
+**Never let errors crash the scheduler — and never `await` a consumer callback:**
+
 ```javascript
-try {
-  await job.callback();
-} catch (err) {
-  log.error(`Cron job "${job.key}" failed:`, err);
-}
-// Always reschedule job, even after error
+// Reschedule FIRST, then invoke without awaiting. `runDueJobs` returns void and
+// nothing here consumes the callback's result, so awaiting bought nothing and
+// cost the scheduler: a callback that never settled left the job absent from the
+// heap, starved every other job, and stopped the timer from re-arming.
 this.setNextTrigger(job);
 heap.push(job);
+
+this.safeInvoke(job);
 ```
+
+All callback invocation goes through `safeInvoke`. Do **not** add a second call
+site — the guard, the catch and the error reporting all live there:
+
+```javascript
+try {
+  const result = job.callback();
+
+  if (result && typeof result.then === 'function') {
+    Promise.resolve(result)
+      // Braces: returning the report would put its promise back into the chain,
+      // and `.finally` passes a rejection straight through.
+      .catch(err => { this.report('error', `... ${describeError(err)}`); })
+      .finally(() => { this.release(job); })
+      .catch(() => {});          // a throwing handler must not escape either
+    return;
+  }
+
+  this.release(job);
+} catch (err) {
+  this.release(job);
+  this.report('error', `... ${describeError(err)}`);
+}
+```
+
+Two rules that fall out of this and are easy to break:
+
+1. **Interpolate the error into the message.** `@stonyx/logs` reads a second
+   argument as `logToFile`, not as a format argument, so `log.error(msg, err)`
+   discards the error *and* forces a disk write on every failure.
+2. **Keep the drain loop's termination invariant.** Because nothing awaits, the
+   `while` loop in `runDueJobs` has no suspension point and `nextTrigger > now`
+   is its only exit condition. An interval that does not advance `nextTrigger`
+   (`NaN`, `0`, negative) spins the loop forever and blocks the event loop.
+   `setNextTrigger` floors the interval at 1 second for exactly this reason.
 
 ### Time Handling
 **Always use `getTimestamp()` for current time:**
 ```javascript
 // CORRECT
 const now = getTimestamp();
-job.nextTrigger = getTimestamp() + parseInt(job.interval, 10);
+job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? 1);
 
 // WRONG - don't use Date.now() or other time sources
 const now = Date.now(); // WRONG: milliseconds instead of seconds
