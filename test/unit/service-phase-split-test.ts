@@ -17,6 +17,13 @@
  *
  * Heap assertions are key-scoped (`items.filter(i => i.key === job.id)`),
  * never `items.length`.
+ *
+ * ASSERTION LABELLING: an assertion whose message starts with `guard:` passes
+ * by construction against the pre-fix tree as well — it is present so a later
+ * change cannot silently break the property, not as evidence for this one.
+ * `precondition:` marks a setup check. Every test here also carries at least
+ * one assertion that genuinely fails against the tree it was written for; no
+ * test is propped up by a `guard:` assertion alone.
  */
 import QUnit from 'qunit';
 import { readFileSync } from 'fs';
@@ -143,9 +150,9 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.true(added.settled(), 'add() resolves while the callback is in flight');
       assert.true(updated.settled(), 'update() resolves while the callback is in flight');
       assert.true(removed.settled(), 'remove() resolves while the callback is in flight');
-      assert.strictEqual(added.error(), undefined, 'add() resolved rather than rejecting');
-      assert.strictEqual(updated.error(), undefined, 'update() resolved rather than rejecting');
-      assert.strictEqual(removed.error(), undefined, 'remove() resolved rather than rejecting');
+      assert.strictEqual(added.error(), undefined, 'guard: add() resolved rather than rejecting');
+      assert.strictEqual(updated.error(), undefined, 'guard: update() resolved rather than rejecting');
+      assert.strictEqual(removed.error(), undefined, 'guard: remove() resolved rather than rejecting');
       assert.strictEqual(service.get(victim.id), null, 'the mutation actually applied — victim is gone');
     });
   });
@@ -191,7 +198,7 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(31_000);
       await clock.tickAsync(0);
 
-      assert.strictEqual(innerError, null, 'no error escaped the inner mutations');
+      assert.strictEqual(innerError, null, 'guard: no error escaped the inner mutations');
       assert.ok(innerAddId, 'the inner add() resolved from inside the callback');
       assert.true(callbackCompleted, 'the callback ran to completion');
       assert.strictEqual(service.status().jobCount, 2, 'the spawned job was added');
@@ -258,7 +265,7 @@ module('CronService — phase split (#34)', function (hooks) {
         assert.strictEqual(service.get(sibling.id)?.state.runningAtMs, undefined, 'the sibling settled — runningAtMs was cleared');
         assert.strictEqual(heapEntriesFor(service, sibling.id), 1, 'the sibling is back on the heap');
 
-        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+        assert.false(service.running, 'guard: the scheduler released its re-entrancy latch');
       } finally {
         rejections.restore();
         restoreLogging();
@@ -280,7 +287,7 @@ module('CronService — phase split (#34)', function (hooks) {
         const result = probe<RunResult>(service.run(job.id, 'force'));
         await clock.tickAsync(0);
 
-        assert.true(result.settled(), 'run() settled');
+        assert.true(result.settled(), 'guard: run() settled');
         assert.strictEqual(result.error(), undefined, 'run() resolved rather than rejecting');
         assert.strictEqual(result.value()?.status, 'error', 'run() reported the callback error');
         assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
@@ -341,7 +348,7 @@ module('CronService — phase split (#34)', function (hooks) {
       const result = probe<RunResult>(service.run(job.id, 'force'));
       await clock.tickAsync(0);
 
-      assert.true(result.settled(), 'run() settled');
+      assert.true(result.settled(), 'guard: run() settled');
       assert.strictEqual(result.error(), undefined, 'run() resolved rather than rejecting');
       assert.strictEqual(result.value()?.status, 'error', 'the throw was reported as an error result');
       assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
@@ -447,9 +454,9 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(0);
 
       assert.deepEqual(fired, ['A'], 'B was not invoked after being removed mid-batch');
-      assert.strictEqual(service.get(bId), null, 'B stays removed');
-      assert.strictEqual(heapEntriesFor(service, bId), 0, 'no heap entry for removed B');
-      assert.strictEqual(service.runs(bId).length, 0, 'no run-log entry for removed B');
+      assert.strictEqual(service.get(bId), null, 'guard: B stays removed');
+      assert.strictEqual(heapEntriesFor(service, bId), 0, 'guard: no heap entry for removed B');
+      assert.strictEqual(service.runs(bId).length, 0, 'guard: no run-log entry for removed B');
     });
   });
 
@@ -623,10 +630,10 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(0);
 
       assert.true(removal.settled(), 'precondition: the removal resolved');
-      assert.true(result.settled(), 'run() settled');
+      assert.true(result.settled(), 'guard: run() settled');
       assert.strictEqual(result.value()?.status, 'skipped', 'run() reported a skip');
       assert.strictEqual(result.value()?.reason, 'removed', 'run() reported reason "removed"');
-      assert.strictEqual(service.get(job.id), null, 'the job stays removed');
+      assert.strictEqual(service.get(job.id), null, 'guard: the job stays removed');
     });
 
     test('a stale claim must not unschedule the replacement that now owns its id', async function (assert) {
@@ -914,7 +921,7 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(31_000);
       await clock.tickAsync(0);
 
-      assert.strictEqual(innerError, null, 'the inner remove() did not error');
+      assert.strictEqual(innerError, null, 'guard: the inner remove() did not error');
       assert.true(innerRemoveSettled, 'the inner remove() resolved from inside the callback');
       assert.strictEqual(service.get(job.id), null, 'the job stays removed');
       assert.strictEqual(service.status().jobCount, 0, 'no job was resurrected');
