@@ -202,5 +202,33 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'guard: exactly one heap entry after settle');
       assert.false(service.running, 'guard: the scheduler released and re-armed');
     });
+
+    test('a job removed by its own callback is not resurrected by the settle phase', async function (assert) {
+      let innerRemoveSettled = false;
+      let innerError: string | null = null;
+
+      service.onJobDue = async (job) => {
+        try {
+          await service.remove(job.id);
+          innerRemoveSettled = true;
+        } catch (err: unknown) {
+          innerError = err instanceof Error ? err.message : String(err);
+        }
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Removed Mid Flight', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.strictEqual(innerError, null, 'the inner remove() did not error');
+      assert.true(innerRemoveSettled, 'the inner remove() resolved from inside the callback');
+      assert.strictEqual(service.get(job.id), null, 'the job stays removed');
+      assert.strictEqual(service.status().jobCount, 0, 'no job was resurrected');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'settle left no heap entry for the removed job');
+      assert.strictEqual(service.runs(job.id).length, 0, 'settle left no run-log entry for the removed job');
+    });
   });
 });

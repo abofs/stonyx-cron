@@ -357,6 +357,14 @@ export default class CronService {
     const validStatus = (status === 'ok' || status === 'error' || status === 'skipped') ? status : 'error';
     applyResult(job, validStatus, error, durationMs);
 
+    // The callback ran unlocked, so it may have removed this job while it was
+    // in flight. Do not resurrect a removed job's heap entry or run log.
+    if (this.jobs.get(job.id) !== job) {
+      this.removeFromHeap(job.id);
+      this.armTimer();
+      return { status, error, summary, durationMs };
+    }
+
     // Log the run
     this.runLog.record({
       jobId: job.id,
