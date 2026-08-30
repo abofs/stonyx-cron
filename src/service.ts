@@ -416,51 +416,62 @@ export default class CronService {
     startMs: number,
     durationMs: number,
   ): ExecuteResult {
-    const validStatus = (status === 'ok' || status === 'error' || status === 'skipped') ? status : 'error';
-    applyResult(job, validStatus, error, durationMs);
+    try {
+      const validStatus = (status === 'ok' || status === 'error' || status === 'skipped') ? status : 'error';
+      applyResult(job, validStatus, error, durationMs);
 
-    // The callback ran unlocked, so it may have removed this job while it was
-    // in flight. Do not resurrect a removed job's heap entry or run log.
-    if (this.jobs.get(job.id) !== job) {
+      // The callback ran unlocked, so this job may have been removed - or
+      // removed and re-registered under the same id (the shape
+      // `start(initialJobs)` uses) - while it was in flight. Identity, not id.
+      //
+      // Deliberately touch NOTHING here. The claim phase already detached this
+      // job's own heap entry and nothing re-added it, so there is nothing to
+      // clean up; any entry now filed under this id belongs to the
+      // replacement, and removing it by id would silently unschedule a live
+      // job. Do not resurrect a removed job's heap entry or run log either.
+      if (this.jobs.get(job.id) !== job) {
+        return { status, error, summary, durationMs };
+      }
+
+      // Log the run
+      this.runLog.record({
+        jobId: job.id,
+        status,
+        error,
+        summary,
+        runAtMs: startMs,
+        durationMs,
+        nextRunAtMs: job.state.nextRunAtMs,
+      });
+
+      // Handle one-shot auto-delete. The callback ran unlocked and may have
+      // pushed a heap entry for this job via update(), so drop it - the job is
+      // about to stop existing.
+      if (job.deleteAfterRun && status === 'ok' && !job.enabled) {
+        this.jobs.delete(job.id);
+        this.removeFromHeap(job.id);
+        this.runLog.removeJob(job.id);
+        return { status, summary, deleted: true };
+      }
+
+      // Re-insert into heap if still active. The callback ran unlocked, so it
+      // may itself have added a heap entry for this job (via add/update); drop
+      // any such entry first to preserve one-entry-per-key.
       this.removeFromHeap(job.id);
-      this.armTimer();
+      if (job.enabled && job.state.nextRunAtMs) {
+        this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
+      }
+
       return { status, error, summary, durationMs };
-    }
-
-    // Log the run
-    this.runLog.record({
-      jobId: job.id,
-      status,
-      error,
-      summary,
-      runAtMs: startMs,
-      durationMs,
-      nextRunAtMs: job.state.nextRunAtMs,
-    });
-
-    // Handle one-shot auto-delete
-    if (job.deleteAfterRun && status === 'ok' && !job.enabled) {
-      this.jobs.delete(job.id);
-      this.removeFromHeap(job.id);
-      this.runLog.removeJob(job.id);
+    } finally {
+      // One re-arm covering every exit, rather than one per branch. The claim
+      // phase detached this job from the heap, so a timer that fired during the
+      // unlocked invoke would have found an empty heap and armed nothing -
+      // and `run()` has no `finally { armTimer() }` of its own the way
+      // `onTimer` does. Without this a manual run() can leave the scheduler
+      // with no pending wake at all.
       this.armTimer();
-      return { status, summary, deleted: true };
     }
-
-    // Re-insert into heap if still active. The callback ran unlocked, so it
-    // may itself have added a heap entry for this job (via add/update); drop
-    // any such entry first to preserve one-entry-per-key.
-    this.removeFromHeap(job.id);
-    if (job.enabled && job.state.nextRunAtMs) {
-      this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
-    }
-
-    // The claim phase detached this job from the heap, so a timer that fired
-    // during the unlocked invoke would have seen it missing. Re-arm here so a
-    // manual run() can never leave the scheduler without a pending wake.
-    this.armTimer();
-
-    return { status, error, summary, durationMs };
   }
 
   // -- Helpers ---------------------------------------------------------

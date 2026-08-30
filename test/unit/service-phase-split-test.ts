@@ -24,6 +24,7 @@ import config from 'stonyx/config';
 import log from 'stonyx/log';
 import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
+import type { Job } from '../../src/job.js';
 import { resetLock } from '../../src/locked.js';
 
 const { module, test } = QUnit;
@@ -364,6 +365,44 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(service.get(bId), null, 'B stays removed');
       assert.strictEqual(heapEntriesFor(service, bId), 0, 'no heap entry for removed B');
       assert.strictEqual(service.runs(bId).length, 0, 'no run-log entry for removed B');
+    });
+  });
+
+  module('HIGH — a stale settle must not clobber a replacement', function () {
+    test('settling a job whose id was re-registered leaves the replacement scheduled', async function (assert) {
+      // The settle guard compares object identity (correct) but removed from
+      // the heap BY ID — so a stale settle deleted the replacement's entry.
+      // Reachable through the documented store-rehydration path:
+      // stop() then start(initialJobs) re-registers the same id.
+      let release: (() => void) | undefined;
+      service.onJobDue = () => new Promise<void>(resolve => { release = () => resolve(); });
+
+      await service.start();
+      const job = await service.add({ name: 'Original', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const inFlight = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+      assert.ok(service.get(job.id)?.state.runningAtMs, 'precondition: the original is claimed and in flight');
+
+      await service.remove(job.id);
+
+      const replacement: Job = {
+        ...job,
+        name: 'Replacement',
+        state: { ...job.state, runningAtMs: undefined, nextRunAtMs: Date.now() + 3_600_000 },
+      };
+      service.stop();
+      await service.start([replacement]);
+
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: the replacement is armed with one heap entry');
+
+      release?.();
+      await clock.tickAsync(0);
+
+      assert.true(inFlight.settled(), 'the original run settled');
+      assert.strictEqual(service.get(job.id), replacement, 'the replacement is still the registered job');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the stale settle did not remove the replacement heap entry');
+      assert.strictEqual(service.status().nextWakeAtMs, replacement.state.nextRunAtMs, 'the scheduler still wakes for the replacement');
     });
   });
 
