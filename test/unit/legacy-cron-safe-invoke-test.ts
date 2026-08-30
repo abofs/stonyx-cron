@@ -143,6 +143,20 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
         cron.heap.items.some(item => item.key === 'syncboom'),
         'job remains scheduled in the heap after a synchronous init throw (key-scoped)',
       );
+
+      // Heap membership is not liveness. Under a missing release on the
+      // synchronous-throw path the job stays in `jobs`, stays in the heap and
+      // keeps the timer armed while never running again — the same
+      // false-liveness signature the refinement flagged for the original
+      // defect, and strictly worse than `dev`, where a sync-throwing job keeps
+      // firing. The two assertions below are the ones that discriminate.
+      await clock.tickAsync(300_000);
+      assert.strictEqual(errorSpy.callCount, 2, 'the job ran again on its next tick after throwing');
+      assert.strictEqual(
+        cron.jobs['syncboom']?.runningAtMs,
+        undefined,
+        'the guard was released by the synchronous catch',
+      );
     });
   });
 
