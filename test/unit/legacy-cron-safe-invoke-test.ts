@@ -425,6 +425,34 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       // Asserted here as well as in afterEach so the failure names this path.
       assert.strictEqual(rejections.length, 0, 'a failure inside the error handler did not escape as an unhandled rejection');
     });
+
+    // The other failure mode of the same call, and the reachable one:
+    // `@stonyx/logs`' `logAction` is NOT async — it dereferences
+    // `this.typeOptions[type]` and `this.color.getLogColor(type)` before it
+    // returns a promise — so a misconfigured log type throws *synchronously*
+    // rather than rejecting. The same shape occurs on a `stonyx` build where
+    // `log.warn` was never materialised.
+    //
+    // This is not a lost log line. `report` is called from the skip branch of
+    // `safeInvoke`, which runs inside `runDueJobs`' drain loop with nothing
+    // above it to catch: a synchronous throw escapes the loop, `scheduleNextRun`
+    // never runs, and every other job stops — D1 reintroduced through the
+    // reporting path added to fix D2.
+    test('a logger that throws synchronously does not stop the scheduler', async function (assert) {
+      sinon.stub(log, 'warn').throws(new TypeError('log.warn is not a function'));
+      const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+      const probe = sinon.spy();
+
+      cron.register('hang', hang, '1');
+      cron.register('probe', probe, '2');
+
+      await clock.tickAsync(6000);
+
+      // Precondition: the hung job is what drives `report` — it is skipped on
+      // the tick after it hangs, and that skip is the throwing call.
+      assert.strictEqual(hang.callCount, 1, 'precondition: the hung job was invoked once and then skipped');
+      assert.ok(probe.callCount >= 2, `the unrelated job kept firing (fired ${probe.callCount}x, expected >= 2)`);
+    });
   });
 
   module('SME WARNING 6 — the skip warning is bounded', function () {
