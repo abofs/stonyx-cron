@@ -376,12 +376,31 @@ export default class CronService {
     // caught too. Deliberately synchronous with the `onJobDue` call below -
     // nothing can interleave between this check and the invocation.
     //
-    // Returning here without a settle is NOT the claim-without-settle hazard
-    // the try/finally below exists for: the job is already out of `this.jobs`,
-    // so the object holding `runningAtMs` is unreachable, its heap entry was
-    // removed by `remove()`, and re-inserting or run-logging it is exactly the
-    // resurrection `settleJob`'s identity guard refuses.
-    if (this.jobs.get(job.id) !== job) return { status: 'skipped', reason: 'removed' };
+    // This is the ONE early return in the phase-2/3 control flow that happens
+    // after a claim, so it is the one that has to release the claim by hand.
+    // (`executeJob`'s refusal return at the call site is pre-claim; `onTimer`'s
+    // re-entrancy return never claims; every return inside `settleJob` is
+    // already past phase 3.)
+    //
+    // Skipping settle entirely here is right - re-inserting or run-logging a
+    // removed job is exactly the resurrection `#settleJob`'s identity guard
+    // refuses, and its heap entry is already gone. But the claim itself must
+    // still come off, because the detached object is NOT unreachable: it is the
+    // object `add()` returned and `get()`/`list()` hand out, and
+    // `start(initialJobs)` re-registers those objects verbatim, `state`
+    // included. Leaving `runningAtMs` set means a consumer that persists jobs
+    // rehydrates a permanently dead one - `isDue` false forever, `run()`
+    // refused forever, `status()` reporting it healthy. That is the
+    // claim-without-settle hazard the try/finally below exists for, reached
+    // through a different door.
+    //
+    // Assigned directly rather than via `applyResult`: this must release the
+    // claim and nothing else. No run-log row, no heap entry, no lastStatus, no
+    // recomputed nextRunAtMs - the job did not run.
+    if (this.jobs.get(job.id) !== job) {
+      job.state.runningAtMs = undefined;
+      return { status: 'skipped', reason: 'removed' };
+    }
 
     const startMs = Date.now();
     let status: string = 'ok';
