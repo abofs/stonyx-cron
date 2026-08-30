@@ -353,7 +353,7 @@ export default class CronService {
    */
   async executeJob(job: Job): Promise<ExecuteResult> {
     // -- Phase 1: claim (locked) --
-    const refusal = await locked(() => this.claimJob(job));
+    const refusal = await locked(() => this.#claimJob(job));
     if (refusal) return { status: 'skipped', reason: refusal };
 
     return this.#executeClaimed(job);
@@ -370,7 +370,7 @@ export default class CronService {
     // Membership re-check. The claim and the invoke are no longer in the same
     // critical section, and sibling callbacks run unlocked, so a `remove()` can
     // land in between AND RESOLVE - it used to deadlock. A resolved `remove()`
-    // must keep meaning "this callback will not fire": settleJob's identity
+    // must keep meaning "this callback will not fire": #settleJob's identity
     // guard only cleans up afterwards, by which point the side effect has
     // already happened. Identity, not id, so a removed-then-replaced key is
     // caught too. Deliberately synchronous with the `onJobDue` call below -
@@ -379,7 +379,7 @@ export default class CronService {
     // This is the ONE early return in the phase-2/3 control flow that happens
     // after a claim, so it is the one that has to release the claim by hand.
     // (`executeJob`'s refusal return at the call site is pre-claim; `onTimer`'s
-    // re-entrancy return never claims; every return inside `settleJob` is
+    // re-entrancy return never claims; every return inside `#settleJob` is
     // already past phase 3.)
     //
     // Skipping settle entirely here is right - re-inserting or run-logging a
@@ -432,7 +432,7 @@ export default class CronService {
       }
     } finally {
       // -- Phase 3: settle (locked) --
-      settled = await locked(() => this.settleJob(job, status, error, summary, startMs, Date.now() - startMs));
+      settled = await locked(() => this.#settleJob(job, status, error, summary, startMs, Date.now() - startMs));
     }
 
     return settled;
@@ -441,6 +441,15 @@ export default class CronService {
   /**
    * Phase 1 - claim. Must be called while holding the lock (`locked()`, whose
    * chain is module-global and therefore shared across CronService instances).
+   *
+   * `#private`, like `#executeClaimed` and for the same reason. Published, this
+   * was a supported call performing `markRunning` + `removeFromHeap` with no
+   * guaranteed settle - the claim-without-settle shape the try/finally in
+   * `#executeClaimed` exists to prevent, and with no lease on `runningAtMs` a
+   * single such call permanently strands the job: off the heap, marked running,
+   * with nothing that will ever release it. The precondition below cannot be
+   * expressed in the type system, so the method must not be reachable from
+   * outside the class body.
    *
    * Returns `null` on a successful claim, or the reason the claim was refused.
    * "already running" is what makes a second `run()` report a skip instead of
@@ -453,7 +462,7 @@ export default class CronService {
    * fresh entry) is what keeps manual runs from permanently duplicating heap
    * entries.
    */
-  claimJob(job: Job): 'already running' | 'removed' | null {
+  #claimJob(job: Job): 'already running' | 'removed' | null {
     if (this.jobs.get(job.id) !== job) return 'removed';
     if (job.state.runningAtMs) return 'already running';
 
@@ -465,8 +474,13 @@ export default class CronService {
 
   /**
    * Phase 3 - settle. Must be called while holding the lock.
+   *
+   * `#private` for the same reason as `#claimJob`: unlocked it would run
+   * `applyResult`, a `runLog.record`, a full `removeFromHeap` rebuild, a
+   * `heap.push` and an `armTimer` with no mutual exclusion - exactly the
+   * corruption `locked()` exists to prevent.
    */
-  settleJob(
+  #settleJob(
     job: Job,
     status: string,
     error: string | undefined,

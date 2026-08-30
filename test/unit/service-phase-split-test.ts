@@ -590,9 +590,16 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.notOk(/alreadyClaimed/.test(declarations), 'dist/service.d.ts declares no alreadyClaimed parameter');
       assert.ok(/executeJob\(job: Job\): Promise/.test(declarations), 'executeJob publishes a single-parameter signature');
       assert.ok(/#private;/.test(declarations), 'the pre-claimed entry point is emitted as #private, not as a callable member');
+
+      // Net-new published API this PR would otherwise have added. `claimJob`
+      // published is `markRunning` + `removeFromHeap` with no guaranteed
+      // settle — the same shape as the BLOCKER, and with no lease on
+      // `runningAtMs` it permanently strands the job.
+      assert.notOk(/\bclaimJob\s*\(/.test(declarations), 'dist/service.d.ts publishes no claimJob');
+      assert.notOk(/\bsettleJob\s*\(/.test(declarations), 'dist/service.d.ts publishes no settleJob');
     });
 
-    test('claimJob refuses a job removed between run()\'s lookup and the lock turn', async function (assert) {
+    test('run() reports "removed" when the job is deleted before the claim lands', async function (assert) {
       // run() reads `this.jobs.get(id)` unlocked, then claims under the lock.
       // A remove() queued first resolves in between, so the claim would
       // otherwise markRunning an orphan and removeFromHeap an id that may
