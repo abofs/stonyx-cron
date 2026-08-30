@@ -301,14 +301,19 @@ module('CronService — phase split (#34)', function (hooks) {
 
     test('settle still runs when the error-reporting path itself throws', async function (assert) {
       const rejections = captureUnhandledRejections();
-      const errorLog = sinon.stub(log, 'error');
+      // BOTH reporting channels fail. `log()` is a public, overridable method
+      // that can reach a file transport, so it is a real second failure source
+      // inside the catch handler — the exact shape the `log.cron` defect took.
+      // `log.error` is the ungated channel the per-iteration handler reports
+      // on, and it is a shared singleton whose transports reach the filesystem
+      // too, so the swallow around it is load-bearing: without it the outermost
+      // handler on the timer path becomes a throw site of its own.
+      const errorLog = sinon.stub(log, 'error').throws(new Error('error transport exploded'));
 
       try {
-        // `log()` is a public, overridable method that can reach a file
-        // transport, so it is a real second failure source inside the catch
-        // handler — the exact shape the `log.cron` defect took. This falsifies
-        // the try/finally on its own: with settle as a trailing statement, ANY
-        // throw here skips phase 3 and permanently strands the claim.
+        // This falsifies the try/finally on its own: with settle as a trailing
+        // statement, ANY throw here skips phase 3 and permanently strands the
+        // claim.
         service.log = () => { throw new Error('log transport exploded'); };
         service.onJobDue = () => { throw new Error('callback blew up'); };
 
@@ -327,8 +332,8 @@ module('CronService — phase split (#34)', function (hooks) {
         // is caught by `onTimer`'s per-iteration handler. Asserting on both
         // channels here pins that handler with an assertion rather than leaving
         // it detectable only as QUnit's global-error trap.
-        assert.deepEqual(rejections.seen(), [], 'the per-iteration handler caught it — nothing escaped as an unhandled rejection');
-        assert.strictEqual(errorLog.callCount, 1, 'and reported it on the ungated error channel');
+        assert.strictEqual(errorLog.callCount, 1, 'the per-iteration handler reported it on the ungated error channel');
+        assert.deepEqual(rejections.seen(), [], 'and swallowed that channel failing too — nothing escaped as an unhandled rejection');
       } finally {
         errorLog.restore();
         rejections.restore();
