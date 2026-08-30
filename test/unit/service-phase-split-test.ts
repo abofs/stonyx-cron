@@ -409,6 +409,76 @@ module('CronService — phase split (#34)', function (hooks) {
     });
   });
 
+  module('HIGH — a skipped settle must still release the claim', function () {
+    test('a job removed mid-batch releases its claim, so a rehydrated store entry still fires', async function (assert) {
+      // `#executeClaimed`'s `removed` early return skips phase 3, so nothing
+      // clears `runningAtMs`. The comment that justified it — the object is
+      // unreachable once it leaves `this.jobs` — is false: `start(initialJobs)`
+      // re-registers those exact objects verbatim, `state` included. That is
+      // the same rehydration path the replacement-clobber test above relies on.
+      // A job removed by a sibling's callback therefore comes back from the
+      // store still claimed: `isDue` is false forever, `run()` is refused
+      // forever, and `status()` reports it healthy. Same failure class as the
+      // BLOCKER, reintroduced through the early-return path.
+      let bId = '';
+      service.onJobDue = async (job) => {
+        if (job.name === 'A') await service.remove(bId);
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      await service.add({ name: 'A', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const b = await service.add({ name: 'B', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      bId = b.id;
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.strictEqual(service.get(bId), null, 'precondition: B was removed mid-batch');
+      assert.strictEqual(b.state.runningAtMs, undefined, 'the removed job released its claim');
+
+      // Rehydrate the very object a store would have persisted.
+      const firedAfterRestart: string[] = [];
+      service.onJobDue = (job) => { firedAfterRestart.push(job.name); return { status: 'ok' }; };
+      service.stop();
+      await service.start([b]);
+
+      assert.strictEqual(heapEntriesFor(service, bId), 1, 'precondition: the rehydrated job is armed');
+
+      await clock.tickAsync(600_000);
+
+      assert.true(
+        firedAfterRestart.includes('B'),
+        'the rehydrated job fires again rather than being permanently dead',
+      );
+    });
+
+    test('a remove() landing after the claim releases it and reports "removed", not "already running"', async function (assert) {
+      // Window row 4, and the falsifier for the `reason` VALUE at the
+      // membership re-check. `run()` claims in its own lock turn; a `remove()`
+      // queued immediately after runs in the next turn, before the re-check.
+      // Distinct from the refusal test below, where the removal is queued FIRST
+      // and the claim never lands at all — that path returns the same observable
+      // from a different guard, which is why both need their own test.
+      service.onJobDue = () => ({ status: 'ok' });
+
+      await service.start();
+      const job = await service.add({ name: 'Removed After Claim', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = probe<RunResult>(service.run(job.id, 'force'));
+      const removal = probe(service.remove(job.id));
+      await clock.tickAsync(0);
+
+      assert.true(removal.settled(), 'precondition: the removal resolved');
+      assert.true(result.settled(), 'guard: run() settled');
+      assert.strictEqual(result.value()?.status, 'skipped', 'run() reported a skip');
+      assert.strictEqual(result.value()?.reason, 'removed', 'run() reported reason "removed"');
+      assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released even though settle was skipped');
+      assert.strictEqual(service.runs(job.id).length, 0, 'no run-log row was written for the removed job');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'the removed job was not resurrected onto the heap');
+    });
+  });
+
   module('HIGH — the claim guard is not bypassable from the published surface', function () {
     test('a second executeJob() cannot skip the claim phase, even with an extra argument', async function (assert) {
       // `alreadyClaimed` was an internal onTimer<->executeJob coordination
