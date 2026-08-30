@@ -288,30 +288,51 @@ module('CronService — phase split (#34)', function (hooks) {
       }
     });
 
-    test('settle still runs when the catch handler itself throws', async function (assert) {
+    test('settle still runs when the error-reporting path itself throws', async function (assert) {
       const rejections = captureUnhandledRejections();
 
       try {
-        // A value the catch handler cannot stringify: `err instanceof Error` is
-        // false, so it falls through to `String(err)`, which throws
-        // "Cannot convert object to primitive value" on a null-prototype
-        // object. This exercises the try/finally independently of the logging
-        // defect above — nothing about `config.cron.log` is touched here.
-        service.onJobDue = () => { throw Object.create(null) as never; };
+        // `log()` is a public, overridable method that can reach a file
+        // transport, so it is a real second failure source inside the catch
+        // handler — the exact shape the `log.cron` defect took. This falsifies
+        // the try/finally on its own: with settle as a trailing statement, ANY
+        // throw here skips phase 3 and permanently strands the claim.
+        service.log = () => { throw new Error('log transport exploded'); };
+        service.onJobDue = () => { throw new Error('callback blew up'); };
 
         await service.start();
-        const job = await service.add({ name: 'Unstringifiable', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+        const job = await service.add({ name: 'Log Explodes', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
 
         await clock.tickAsync(31_000);
         await clock.tickAsync(0);
 
         assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite a non-local exit from phase 2');
+        assert.strictEqual(service.get(job.id)?.state.lastStatus, 'error', 'the error result was still applied');
         assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
         assert.false(service.running, 'the scheduler released its re-entrancy latch');
-        assert.deepEqual(rejections.seen(), [], 'nothing escaped as an unhandled rejection');
       } finally {
         rejections.restore();
       }
+    });
+
+    test('a callback throwing an unstringifiable value is recorded as an error, not a crash', async function (assert) {
+      // `err instanceof Error` is false for a null-prototype object, so the
+      // catch handler falls through to `String(err)` — which throws
+      // "Cannot convert object to primitive value". The error handler must be
+      // total; a consumer callback can throw any value at all.
+      service.onJobDue = () => { throw Object.create(null) as never; };
+
+      await service.start();
+      const job = await service.add({ name: 'Unstringifiable', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = probe<RunResult>(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.true(result.settled(), 'run() settled');
+      assert.strictEqual(result.error(), undefined, 'run() resolved rather than rejecting');
+      assert.strictEqual(result.value()?.status, 'error', 'the throw was reported as an error result');
+      assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is still scheduled');
     });
   });
 

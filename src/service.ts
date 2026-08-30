@@ -15,6 +15,24 @@ import RunLog from './run-log.js';
 
 const MAX_TIMER_DELAY_MS = 60_000;
 
+/**
+ * Describe a thrown value without ever throwing.
+ *
+ * `String(err)` is not total: a null-prototype object, or any object whose
+ * `toString`/`Symbol.toPrimitive` throws, raises "Cannot convert object to
+ * primitive value". Consumer callbacks throw arbitrary values, so the error
+ * handler itself must not be a second failure source.
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+
+  try {
+    return String(err);
+  } catch {
+    return 'unknown error';
+  }
+}
+
 interface HeapEntry extends HeapItem {
   key: string;
 }
@@ -252,7 +270,24 @@ export default class CronService {
       // awaited here holding no lock at all, so a callback that never settles
       // cannot poison the lock chain.
       for (const job of dueJobs) {
-        await this.executeJob(job, true);
+        try {
+          await this.executeJob(job, true);
+        } catch (err: unknown) {
+          // One job's unexpected throw must not abort the batch. Every job in
+          // `dueJobs` is already claimed - marked running and detached from the
+          // heap - and only its own settle releases it, so aborting here would
+          // strand every sibling permanently un-due.
+          //
+          // This is the outermost handler on the timer path, so it is the one
+          // that must not be able to throw. `log()` is public, overridable and
+          // can reach a file transport, so its own failure is swallowed here
+          // rather than being allowed to take the batch down.
+          try {
+            this.log(`Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`);
+          } catch {
+            // Nothing left to report to.
+          }
+        }
       }
     } finally {
       this.running = false;
@@ -299,31 +334,40 @@ export default class CronService {
       if (!claimed) return { status: 'skipped', reason: 'already running' };
     }
 
-    // -- Phase 2: invoke (NOT locked) --
     const startMs = Date.now();
     let status: string = 'ok';
     let error: string | undefined;
     let summary: string | undefined;
+    let settled: ExecuteResult | undefined;
 
+    // The claim above marked the job running and detached it from the heap.
+    // Phase 3 is the ONLY thing that undoes either, so it must survive every
+    // non-local exit from phase 2 - including a throw from the catch handler
+    // itself. A claim with no matching settle is not a degraded state, it is a
+    // permanently dead job: `runningAtMs` set, no heap entry, `isDue` false
+    // forever and `run()` refused forever.
     try {
-      if (this.onJobDue) {
-        const result = await this.onJobDue(job);
-        if (result) {
-          status = result.status || 'ok';
-          error = result.error;
-          summary = result.summary;
+      // -- Phase 2: invoke (NOT locked) --
+      try {
+        if (this.onJobDue) {
+          const result = await this.onJobDue(job);
+          if (result) {
+            status = result.status || 'ok';
+            error = result.error;
+            summary = result.summary;
+          }
         }
+      } catch (err: unknown) {
+        status = 'error';
+        error = describeError(err);
+        this.log(`Job "${job.name}" (${job.id}) failed: ${error}`);
       }
-    } catch (err: unknown) {
-      status = 'error';
-      error = err instanceof Error ? err.message : String(err);
-      this.log(`Job "${job.name}" (${job.id}) failed: ${error}`);
+    } finally {
+      // -- Phase 3: settle (locked) --
+      settled = await locked(() => this.settleJob(job, status, error, summary, startMs, Date.now() - startMs));
     }
 
-    const durationMs = Date.now() - startMs;
-
-    // -- Phase 3: settle (locked) --
-    return locked(() => this.settleJob(job, status, error, summary, startMs, durationMs));
+    return settled;
   }
 
   /**
@@ -419,6 +463,20 @@ export default class CronService {
 
   log(message: string): void {
     if (!config.cron?.log) return;
-    log.cron(`Cron — ${message}`);
+
+    // `log.cron` is created by `log.defineType`, which runs in `Cron.init()`
+    // (src/main.ts) - a DIFFERENT class. A consumer wiring CronService directly
+    // never runs it, while `config/environment.js` defaults `cron.log` to true,
+    // so an unguarded call throws `log.cron is not a function`. That throw
+    // escapes executeJob's catch, and the error-reporting path must never be
+    // the thing that kills the scheduler. `src/types/stonyx.d.ts:19` declares
+    // `cron()` unconditionally, so the type system will not catch this.
+    const { logColor = '#888', logMethod = 'cron' } = config.cron ?? {};
+    if (typeof log[logMethod] !== 'function') log.defineType(logMethod, logColor);
+
+    const method = log[logMethod];
+    if (typeof method !== 'function') return;
+
+    (method as (content: string) => void).call(log, `Cron — ${message}`);
   }
 }
