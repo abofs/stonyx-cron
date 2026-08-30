@@ -375,6 +375,12 @@ export default class CronService {
     // already happened. Identity, not id, so a removed-then-replaced key is
     // caught too. Deliberately synchronous with the `onJobDue` call below -
     // nothing can interleave between this check and the invocation.
+    //
+    // Returning here without a settle is NOT the claim-without-settle hazard
+    // the try/finally below exists for: the job is already out of `this.jobs`,
+    // so the object holding `runningAtMs` is unreachable, its heap entry was
+    // removed by `remove()`, and re-inserting or run-logging it is exactly the
+    // resurrection `settleJob`'s identity guard refuses.
     if (this.jobs.get(job.id) !== job) return { status: 'skipped', reason: 'removed' };
 
     const startMs = Date.now();
