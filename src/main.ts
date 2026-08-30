@@ -19,6 +19,16 @@ import log from 'stonyx/log';
 import { getTimestamp } from '@stonyx/utils/date';
 import MinHeap, { type HeapItem } from './min-heap.js';
 
+/**
+ * Floor for a job interval, in whole seconds.
+ *
+ * `runDueJobs` no longer awaits the callback, so `next.nextTrigger > now` is the
+ * drain loop's only exit condition *and* the loop has no suspension point left.
+ * An interval that fails to advance `nextTrigger` therefore spins the loop
+ * forever and blocks the event loop, rather than merely scheduling too often.
+ */
+const MIN_INTERVAL_SECONDS = 1;
+
 interface CronJob extends HeapItem {
   callback: () => void | Promise<void>;
   interval: string;
@@ -123,6 +133,31 @@ export default class Cron {
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
+    const seconds = this.parseInterval(interval);
+
+    // Fail fast rather than clamp. An unparseable interval is a programming
+    // error with exactly one likely cause — a cron expression handed to the
+    // legacy class, which takes whole seconds — and clamping it would silently
+    // run a job intended for every 5 minutes once per second, hammering whatever
+    // the callback talks to. Throwing surfaces it at the call site, at boot,
+    // before anything is scheduled. A degenerate-but-parseable interval (`'0'`,
+    // `'-5'`) is a different case: it is interpretable as "as often as possible"
+    // and is clamped to the floor with one warning.
+    if (seconds === null) {
+      throw new TypeError(
+        `Cron job ${JSON.stringify(key)} has an invalid interval ${JSON.stringify(interval)}: `
+        + 'expected whole seconds (e.g. \'30\'). The legacy Cron class does not accept cron '
+        + 'expressions — use CronService for those.',
+      );
+    }
+
+    if (parseInt(interval, 10) < MIN_INTERVAL_SECONDS) {
+      log.warn(
+        `Cron job ${JSON.stringify(key)} interval ${JSON.stringify(interval)} is below the `
+        + `${MIN_INTERVAL_SECONDS}s floor; clamping to ${MIN_INTERVAL_SECONDS}s`,
+      );
+    }
+
     const job: CronJob = { callback, interval, key, nextTrigger: 0 };
     this.jobs[key] = job;
     this.setNextTrigger(job);
@@ -152,8 +187,26 @@ export default class Cron {
     this.scheduleNextRun();
   }
 
+  /**
+   * Parse a job interval (whole seconds, as a string) into a positive integer.
+   *
+   * Returns `null` when the value cannot be parsed at all, so callers can choose
+   * between failing fast (`register`) and falling back (`setNextTrigger`).
+   */
+  parseInterval(interval: string): number | null {
+    const seconds = parseInt(interval, 10);
+
+    if (!Number.isFinite(seconds)) return null;
+
+    return Math.max(MIN_INTERVAL_SECONDS, seconds);
+  }
+
   setNextTrigger(job: CronJob): void {
-    job.nextTrigger = getTimestamp() + parseInt(job.interval, 10);
+    // `register` rejects an unparseable interval up front; this floor is the
+    // backstop for a job object mutated after registration (`cron.jobs` is
+    // public, mutable state) and is what actually guarantees the drain loop
+    // terminates. Never let `nextTrigger` land on `NaN` or on `now`.
+    job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? MIN_INTERVAL_SECONDS);
   }
 
   log(text: string, key: string | null = null): void {

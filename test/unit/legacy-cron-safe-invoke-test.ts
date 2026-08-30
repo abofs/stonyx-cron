@@ -173,4 +173,56 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       await clock.tickAsync(0);
     });
   });
+  module('SME BLOCKER 1 — the drain loop must always terminate', function () {
+    // `runDueJobs` no longer awaits the callback, so `next.nextTrigger > now` is
+    // the loop's ONLY exit condition and its only suspension point is gone. These
+    // pin the arithmetic that guarantees termination.
+    //
+    // Note on form: an end-to-end "does it spin?" test cannot be written so that
+    // it FAILS against the current head — a spinning `runDueJobs` wedges the
+    // runner rather than failing an assertion. The invariant is therefore
+    // asserted directly on `setNextTrigger`, which does fail cleanly.
+    test('setNextTrigger always advances the trigger strictly past now', function (assert) {
+      const intervals = ['*/5 * * * *', 'abc', '', '0', '-5'];
+
+      intervals.forEach(interval => {
+        const job = { callback() {}, interval, key: `iv:${interval}`, nextTrigger: 0 };
+
+        cron.setNextTrigger(job);
+
+        assert.true(
+          job.nextTrigger > getTimestamp(),
+          `interval ${JSON.stringify(interval)} yields a trigger strictly in the future (got ${job.nextTrigger}, now ${getTimestamp()})`,
+        );
+      });
+    });
+
+    test('register rejects an interval it cannot parse as whole seconds', function (assert) {
+      const callback = sinon.spy();
+
+      assert.throws(
+        () => cron.register('cronexpr', callback, '*/5 * * * *'),
+        /interval/i,
+        'register threw on a cron expression instead of scheduling NaN',
+      );
+      assert.notOk(cron.jobs['cronexpr'], 'the job was not registered');
+      assert.false(cron.heap.items.some(item => item.key === 'cronexpr'), 'nothing was pushed onto the heap (key-scoped)');
+      assert.strictEqual(callback.callCount, 0, 'the callback was never invoked');
+    });
+
+    // GUARD — passes by construction once the floor exists, and cannot be shown
+    // failing against the current head because the head spins here rather than
+    // failing (measured out-of-suite: 5,180,703 log lines / exit 137). Kept as a
+    // bounded end-to-end pin that a degenerate interval still schedules normally.
+    test('a zero interval is clamped to the 1s floor and schedules normally', async function (assert) {
+      sinon.stub(log, 'warn');
+      const callback = sinon.spy();
+
+      cron.register('zero', callback, '0');
+
+      await clock.tickAsync(3000);
+
+      assert.strictEqual(callback.callCount, 3, 'fired once per second rather than spinning');
+    });
+  });
 });
