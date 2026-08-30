@@ -283,6 +283,12 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       );
     });
 
+    // GUARD — passes by construction against the pre-fix parse as well:
+    // `parseInt(' 60 ', 10)` is also 60, because `parseInt` skips leading
+    // whitespace and stops at the trailing space. It is not vacuous (an
+    // artificial mutation on the trim does kill it), but unlike its two
+    // neighbours above it does not discriminate against the defect, and the
+    // rule in this file is that such assertions say so.
     test('a padded numeric interval is accepted at its full value', function (assert) {
       cron.register('padded', sinon.spy(), ' 60 ');
 
@@ -378,9 +384,13 @@ module('[Unit] Legacy Cron — safe invoke (#36)', function (hooks) {
       assert.ok(cron.jobs['save']?.runningAtMs, 'the replacement still holds its own in-flight guard');
     });
 
-    // GUARD — passes against the current head (which clears `inFlight` in
-    // `unregister`). Pins the behaviour the head only claims in its PR body and
-    // no test covered; mutation-proven below.
+    // GUARD — passes against the current head. The head releases the key for
+    // free: the guard lives on the job object, so `unregister` drops it with
+    // the object and a re-registered key gets a fresh one. Nothing proved that,
+    // which is the finding; mutation-proven below rather than against `dev`.
+    // (This comment previously described a module-level `inFlight` set cleared
+    // by `unregister` — a design that was replaced two commits later and does
+    // not exist anywhere in this PR.)
     test('unregister releases the key so a re-registered job runs again', async function (assert) {
       sinon.stub(log, 'warn');
       const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
