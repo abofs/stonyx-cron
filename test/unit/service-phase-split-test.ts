@@ -336,6 +336,37 @@ module('CronService — phase split (#34)', function (hooks) {
     });
   });
 
+  module('CRITICAL — a resolved remove() means the callback will not fire', function () {
+    test('a job removed by a sibling callback is not invoked later in the same batch', async function (assert) {
+      // `onTimer` batch-claims every due job under one lock, then invokes them
+      // serially and UNLOCKED. A sibling callback calling remove() therefore
+      // resolves — that call used to deadlock — and the loop, which re-reads
+      // nothing, invokes the removed job anyway. Newly reachable, same root
+      // cause as the self-removal case already guarded in settleJob.
+      const fired: string[] = [];
+      let bId = '';
+
+      service.onJobDue = async (job) => {
+        fired.push(job.name);
+        if (job.name === 'A') await service.remove(bId);
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      await service.add({ name: 'A', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const b = await service.add({ name: 'B', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      bId = b.id;
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.deepEqual(fired, ['A'], 'B was not invoked after being removed mid-batch');
+      assert.strictEqual(service.get(bId), null, 'B stays removed');
+      assert.strictEqual(heapEntriesFor(service, bId), 0, 'no heap entry for removed B');
+      assert.strictEqual(service.runs(bId).length, 0, 'no run-log entry for removed B');
+    });
+  });
+
   module('regression guards', function () {
     // GUARD — passes against dev too. Present so the phase split cannot
     // silently break the happy path it refactors.
