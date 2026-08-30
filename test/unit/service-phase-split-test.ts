@@ -294,6 +294,7 @@ module('CronService — phase split (#34)', function (hooks) {
 
     test('settle still runs when the error-reporting path itself throws', async function (assert) {
       const rejections = captureUnhandledRejections();
+      const errorLog = sinon.stub(log, 'error');
 
       try {
         // `log()` is a public, overridable method that can reach a file
@@ -313,8 +314,16 @@ module('CronService — phase split (#34)', function (hooks) {
         assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite a non-local exit from phase 2');
         assert.strictEqual(service.get(job.id)?.state.lastStatus, 'error', 'the error result was still applied');
         assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
-        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+        assert.false(service.running, 'guard: the scheduler released its re-entrancy latch');
+
+        // The throw from the stubbed log transport escapes phase 2 entirely and
+        // is caught by `onTimer`'s per-iteration handler. Asserting on both
+        // channels here pins that handler with an assertion rather than leaving
+        // it detectable only as QUnit's global-error trap.
+        assert.deepEqual(rejections.seen(), [], 'the per-iteration handler caught it — nothing escaped as an unhandled rejection');
+        assert.strictEqual(errorLog.callCount, 1, 'and reported it on the ungated error channel');
       } finally {
+        errorLog.restore();
         rejections.restore();
       }
     });
@@ -814,6 +823,46 @@ module('CronService — phase split (#34)', function (hooks) {
 
       await clock.tickAsync(3_600_001);
       assert.deepEqual(fired, ['Outlives Its Timer', 'Outlives Its Timer'], 'the job fired again on schedule');
+    });
+  });
+
+  module('WARNING — a phase-3 failure must not be silent', function () {
+    test('a settle that throws is reported on an ungated channel, not only through config.cron.log', async function (assert) {
+      // `onTimer`'s per-iteration catch is the outermost handler on the timer
+      // path. Reporting only through `this.log()` makes a phase-3 failure —
+      // which permanently unschedules the job — completely silent whenever
+      // `config.cron.log` is false, a supported production setting and the
+      // suite's own, while `status()` keeps reporting the service healthy.
+      // Silent-and-healthy is the failure class this change exists to remove.
+      const rejections = captureUnhandledRejections();
+      const errorLog = sinon.stub(log, 'error');
+
+      try {
+        assert.notOk(config.cron.log, 'precondition: cron logging is off, so this.log() is a no-op');
+
+        service.onJobDue = () => ({ status: 'ok' });
+
+        await service.start();
+        const job = await service.add({ name: 'Settle Explodes', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        // Injected through a public own property. `#settleJob` is private, and
+        // RunLog.record is the one thing inside it a consumer can replace —
+        // which is exactly how a real phase-3 failure would arrive.
+        service.runLog.record = () => { throw new Error('settle blew up'); };
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(errorLog.callCount, 1, 'the failure was reported on the ungated error channel');
+        const reported = String(errorLog.firstCall?.args[0] ?? '');
+        assert.true(reported.includes('Settle Explodes'), 'the report names the job');
+        assert.true(reported.includes('settle blew up'), 'the report carries the underlying error');
+        assert.deepEqual(rejections.seen(), [], 'guard: nothing escaped as an unhandled rejection');
+        assert.false(service.running, 'guard: the scheduler released its re-entrancy latch');
+      } finally {
+        errorLog.restore();
+        rejections.restore();
+      }
     });
   });
 
