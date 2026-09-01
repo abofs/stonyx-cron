@@ -19,62 +19,10 @@ import log from 'stonyx/log';
 import { getTimestamp } from '@stonyx/utils/date';
 import MinHeap, { type HeapItem } from './min-heap.js';
 
-/**
- * Floor for a job interval, in whole seconds.
- *
- * `runDueJobs` no longer awaits the callback, so `next.nextTrigger > now` is the
- * drain loop's only exit condition *and* the loop has no suspension point left.
- * An interval that fails to advance `nextTrigger` therefore spins the loop
- * forever and blocks the event loop, rather than merely scheduling too often.
- */
-const MIN_INTERVAL_SECONDS = 1;
-
-/**
- * Ceiling for a single `setTimeout` delay, in milliseconds (2^31 - 1, ~24.9
- * days).
- *
- * Node stores a timer's delay in a 32-bit signed int. A larger value overflows,
- * is truncated to 1 ms and emits a `TimeoutOverflowWarning`, so `scheduleNextRun`
- * would re-arm every millisecond while the job never came due — measured at
- * `'86400000'` (a day expressed in *milliseconds*, the plausible typo): ~790
- * wakeups a second and ~8 GB of stderr a day from a job that never runs.
- *
- * Long intervals are clamped and re-armed rather than rejected, so they work
- * instead of merely failing loudly.
- */
-const TIMEOUT_MAX_MS = 2_147_483_647;
-
-/**
- * Render an unknown thrown value as log text.
- *
- * `@stonyx/logs` reads a second argument as `logToFile`, not as a format
- * argument, so `log.error(message, err)` discards the error entirely *and*
- * forces a disk write on every failure. The error has to be interpolated into
- * the message instead — the shape `CronService.executeJob` already uses.
- */
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.stack ?? `${err.name}: ${err.message}`;
-
-  return String(err);
-}
-
 interface CronJob extends HeapItem {
   callback: () => void | Promise<void>;
   interval: string;
   key: string;
-
-  /**
-   * Timestamp (ms) at which the current invocation started; `undefined` when the
-   * job is idle. Mirrors `job.state.runningAtMs` in the service tier
-   * (`src/job.ts` `markRunning`/`applyResult`/`isDue`).
-   */
-  runningAtMs?: number;
-
-  /**
-   * True once a skip has been reported for the *current* invocation. Bounds the
-   * still-running warning to one line per stuck run instead of one per tick.
-   */
-  skipReported?: boolean;
 }
 
 export default class Cron {
@@ -105,11 +53,7 @@ export default class Cron {
 
     const nextJob = heap.peek();
     if (!nextJob) return;
-    // Clamped to `setTimeout`'s range. `runDueJobs` finds nothing due when the
-    // clamp fires, breaks out of the drain loop, and re-arms the remainder — so
-    // an interval past the ceiling costs one extra wakeup every ~24.9 days
-    // instead of one every millisecond, forever.
-    const delay = Math.min(Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000, TIMEOUT_MAX_MS);
+    const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
 
     this.timer = setTimeout(() => this.runDueJobs(), delay);
   }
@@ -125,143 +69,20 @@ export default class Cron {
 
       if (config.debug) this.log('job has been triggered', job.key);
 
-      // Reschedule *before* invoking. The callback's result is not used by this
-      // class (`runDueJobs` returns void), so awaiting it bought nothing and
-      // cost the scheduler: a callback that never settled left the job absent
-      // from the heap and stopped the timer from ever re-arming.
+      try {
+        await job.callback();
+      } catch (err) {
+        log.error(`Cron job "${job.key}" failed:`, err);
+      }
+
       this.setNextTrigger(job);
       heap.push(job);
-
-      this.safeInvoke(job);
     }
 
     this.scheduleNextRun();
   }
 
-  /**
-   * The one safe way this class invokes a consumer callback.
-   *
-   * Never blocks the caller, catches synchronous throws and asynchronous
-   * rejections alike, and skips the invocation entirely when the job's previous
-   * invocation has not settled yet (fire-and-forget would otherwise let a slow
-   * job stack invocations on itself).
-   */
-  safeInvoke(job: CronJob, runOnInit: boolean = false): void {
-    const { key } = job;
-    const context = runOnInit ? 'failed on init:' : 'failed:';
-
-    // The in-flight guard lives on the job object, not in a module-level set
-    // keyed by string. That is what gives each invocation an identity: the only
-    // thing that ever clears the flag is the settle handler of the invocation
-    // that set it, and that handler closes over this exact job object. A stale
-    // handler therefore cannot release a *later* invocation's guard. It also
-    // matches the in-repo idiom one tier up (`job.state.runningAtMs`).
-    //
-    // `unregister` needs no explicit clear as a result: the flag is dropped with
-    // the job object, so a re-registered key gets a fresh object and runs
-    // immediately, while the abandoned invocation can only ever release itself.
-    if (job.runningAtMs !== undefined) {
-      // Bounded: one line per stuck run, not one per tick. A permanently hung
-      // job is re-pushed and re-skipped every interval forever, which at the
-      // 1s interval this class's own tests use is ~86k log lines a day, per job
-      // — a disk-fill and ingest-cost vector on any deployment capturing stdout.
-      if (!job.skipReported) {
-        job.skipReported = true;
-
-        const runningForSeconds = Math.max(0, Math.round((Date.now() - job.runningAtMs) / 1000));
-
-        this.report(
-          'warn',
-          `Cron job ${JSON.stringify(key)} is still running after ${runningForSeconds}s; skipping this `
-          + 'tick and any further ticks until it settles (this warning is not repeated for this run)',
-        );
-      }
-
-      return;
-    }
-
-    job.runningAtMs = Date.now();
-    job.skipReported = false;
-
-    try {
-      const result = job.callback();
-
-      if (result && typeof (result as Promise<void>).then === 'function') {
-        Promise.resolve(result)
-          .catch((err: unknown) => {
-            // Braces matter: returning `report`'s value would put it back into
-            // the chain, and `.finally` passes a rejection straight through.
-            this.report('error', `Cron job ${JSON.stringify(key)} ${context} ${describeError(err)}`);
-          })
-          .finally(() => { this.release(job); })
-          // Backstop: a throw inside the error handler or the release must not
-          // re-create the unhandled rejection this helper exists to prevent.
-          .catch(() => {});
-
-        return;
-      }
-
-      this.release(job);
-    } catch (err: unknown) {
-      this.release(job);
-      this.report('error', `Cron job ${JSON.stringify(key)} ${context} ${describeError(err)}`);
-    }
-  }
-
-  /**
-   * Report a scheduler-level message without ever letting the logger's own
-   * failure reach the caller.
-   *
-   * `@stonyx/logs` convenience methods return a promise and write to disk
-   * through an unguarded `mkdirSync` + `fsp.appendFile`. On a read-only or full
-   * log volume that promise rejects; an unobserved rejection raised from inside
-   * the handler that exists to prevent unhandled rejections would re-create
-   * exactly the defect this class was fixed for (measured: exit code 1).
-   */
-  report(level: 'error' | 'warn', message: string): void {
-    try {
-      const result = level === 'error' ? log.error(message) : log.warn(message);
-
-      void Promise.resolve(result).catch(() => {});
-    } catch {
-      // Nowhere left to report to; the logger must never stop the scheduler.
-    }
-  }
-
-  /** Release a job's in-flight guard. Only ever called for the job it belongs to. */
-  release(job: CronJob): void {
-    job.runningAtMs = undefined;
-    job.skipReported = false;
-  }
-
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
-    const seconds = this.toSeconds(interval);
-
-    // Fail fast rather than clamp. An interval that is not wholly a number is a
-    // programming error — a cron expression handed to the legacy class, or a
-    // duration with a unit on it (`'1h'`, `'30s'`) — and clamping or truncating
-    // it would silently run a job intended for every hour once per second,
-    // hammering whatever the callback talks to. Throwing surfaces it at the call
-    // site, at boot, before anything is scheduled. A degenerate-but-numeric
-    // interval (`'0'`, `'-5'`) is a different case: it is interpretable as "as
-    // often as possible" and is clamped to the floor with one warning.
-    if (seconds === null) {
-      throw new TypeError(
-        `Cron job ${JSON.stringify(key)} has an invalid interval ${JSON.stringify(interval)}: `
-        + 'expected a value that is wholly a whole-second count (e.g. \'30\'). Units are not '
-        + 'accepted — \'1h\' is rejected, not read as 1. The legacy Cron class does not accept '
-        + 'cron expressions — use CronService for those.',
-      );
-    }
-
-    if (seconds < MIN_INTERVAL_SECONDS) {
-      this.report(
-        'warn',
-        `Cron job ${JSON.stringify(key)} interval ${JSON.stringify(interval)} is below the `
-        + `${MIN_INTERVAL_SECONDS}s floor; clamping to ${MIN_INTERVAL_SECONDS}s`,
-      );
-    }
-
     const job: CronJob = { callback, interval, key, nextTrigger: 0 };
     this.jobs[key] = job;
     this.setNextTrigger(job);
@@ -271,7 +92,13 @@ export default class Cron {
       this.log(`job has been registered with interval: ${interval}`, key);
     }
 
-    if (runOnInit) this.safeInvoke(job, true);
+    if (runOnInit) {
+      try {
+        callback();
+      } catch (err) {
+        log.error(`Cron job "${key}" failed on init:`, err);
+      }
+    }
 
     this.scheduleNextRun();
   }
@@ -290,56 +117,8 @@ export default class Cron {
     this.scheduleNextRun();
   }
 
-  /**
-   * Read a job interval (whole seconds, as a string) as a number, WITHOUT
-   * applying the floor. Returns `null` when the value is not wholly numeric.
-   *
-   * `Number()` rather than `parseInt`, deliberately. `parseInt` stops at the
-   * first non-numeric character and so fails in the dangerous direction: it
-   * reads `'1h'` as 1, `'30s'` as 30 and `'5m'` as 5 — intervals 3600x, 120x and
-   * 60x faster than written, scheduled with no error attached to them. A `NaN`
-   * check catches a cron expression but not those, and those are the likelier
-   * typo: `stonyx-orm` hands `DB_SAVE_INTERVAL` straight through from the
-   * environment as a string. `Number()` reads the whole value or none of it, and
-   * also gets `'1e3'` (1000, not 1) and `' 60 '` (60) right.
-   *
-   * An empty or whitespace-only string is rejected rather than read as
-   * `Number('')` === 0, so a missing value is a loud error and not a job silently
-   * clamped to the floor.
-   */
-  toSeconds(interval: string): number | null {
-    const trimmed = String(interval ?? '').trim();
-
-    if (!trimmed) return null;
-
-    const seconds = Number(trimmed);
-
-    if (!Number.isFinite(seconds)) return null;
-
-    // Whole seconds; a fractional value truncates as it always has.
-    return Math.trunc(seconds);
-  }
-
-  /**
-   * Parse a job interval into a positive integer at or above the floor.
-   *
-   * Returns `null` when the value cannot be parsed at all, so callers can choose
-   * between failing fast (`register`) and falling back (`setNextTrigger`).
-   */
-  parseInterval(interval: string): number | null {
-    const seconds = this.toSeconds(interval);
-
-    if (seconds === null) return null;
-
-    return Math.max(MIN_INTERVAL_SECONDS, seconds);
-  }
-
   setNextTrigger(job: CronJob): void {
-    // `register` rejects an unparseable interval up front; this floor is the
-    // backstop for a job object mutated after registration (`cron.jobs` is
-    // public, mutable state) and is what actually guarantees the drain loop
-    // terminates. Never let `nextTrigger` land on `NaN` or on `now`.
-    job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? MIN_INTERVAL_SECONDS);
+    job.nextTrigger = getTimestamp() + parseInt(job.interval, 10);
   }
 
   log(text: string, key: string | null = null): void {

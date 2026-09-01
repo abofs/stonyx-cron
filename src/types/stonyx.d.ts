@@ -15,14 +15,7 @@ declare module 'stonyx/config' {
 
 declare module 'stonyx/log' {
   interface Log {
-    // `@stonyx/logs` materialises these from `defaultOptions.systemLogs` via
-    // `createConvenienceMethod`, so they exist at runtime but are declared
-    // upstream only through a `[key: string]: unknown` index signature — which
-    // resolves to a non-callable `unknown`. Hence the shim. The signature below
-    // is the real one: argument 2 is `logToFile`, NOT a format argument, and the
-    // return is a promise that can reject when the log volume is unwritable.
-    error(content: string, logToFile?: boolean, overwrite?: boolean): Promise<void>;
-    warn(content: string, logToFile?: boolean, overwrite?: boolean): Promise<void>;
+    error(message: string, ...args: unknown[]): void;
     cron(message: string): void;
     defineType(type: string, setting: string, options?: Record<string, unknown> | null): void;
     [key: string]: unknown;

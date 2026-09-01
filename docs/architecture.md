@@ -14,40 +14,12 @@ timer = null;       // setTimeout handle for next scheduled run
 **Job Object Schema:**
 ```javascript
 {
-  key: string,            // Unique identifier for the job
-  callback: Function,     // Function to execute; may be sync or async
-  interval: string,       // Interval in whole seconds, as a string
-  nextTrigger: number,    // Unix timestamp in seconds when job should run
-  runningAtMs: number,    // ms timestamp of the in-flight invocation; undefined when idle
-  skipReported: boolean   // whether a still-running skip has been logged for this run
+  key: string,           // Unique identifier for the job
+  callback: Function,    // Async function to execute
+  interval: number,      // Interval in seconds
+  nextTrigger: number    // Unix timestamp in seconds when job should run
 }
 ```
-
-`runningAtMs` is the in-flight guard, and it lives **on the job object** rather
-than in a scheduler-level set keyed by job key. That is deliberate: object
-identity is invocation identity, so the settle handler of one invocation can
-only ever release the guard it set, and a job removed by `unregister` takes its
-guard with it. It mirrors `job.state.runningAtMs` in the service tier
-(`markRunning` / `applyResult` / `isDue` in `src/job.ts`).
-
-**Accepted residual — concurrency across unregister/re-register.** Because a
-replacement job object carries a fresh guard, unregistering a key whose
-invocation is still pending and re-registering it lets the replacement run
-alongside the abandoned invocation. This is **unbounded in principle**: nothing
-serialises a replacement against an abandoned one, so N re-registrations within
-one callback runtime yield up to N+1 concurrent invocations of that key, scaling
-as roughly `floor(callbackRuntime / reRegisterPeriod) + 1`. Measured: 3
-concurrent with two re-registrations, 10 with twelve.
-
-It is accepted on three measured facts. It is **not a regression** — the same
-probe measures 11 concurrent from 31 starts before this change, versus 10 from
-14 after, and the new code drains cleanly where the old does not. It is
-**unreachable for the only known consumer** — `stonyx-orm/src/db.ts` registers
-once and never unregisters. And **bounding it properly would reintroduce the
-defect this class was fixed for**: serialising a replacement against an
-invocation the consumer has explicitly abandoned is exactly what produces a
-permanently dead job. Bounding the callback remains the consumer's
-responsibility.
 
 **Public Methods:**
 
@@ -55,16 +27,8 @@ responsibility.
 - Registers a new recurring job
 - `key` (string): Unique job identifier
 - `callback` (Function): Async function to execute on each trigger
-- `interval` (string): Whole seconds between executions. The value must be
-  *wholly* numeric. **Throws** a `TypeError` on anything else, including a
-  **partially** numeric value: `'1h'`, `'30s'` and `'5m'` are rejected, not read
-  as 1, 30 and 5 (a `parseInt`-style read would truncate them and schedule the
-  job 3600x/120x/60x faster than written, with no error attached). A cron
-  expression belongs to `CronService`, not to this class, and an empty string is
-  rejected as well. A wholly numeric value below `1` (`'0'`, `'-5'`) is
-  interpretable rather than a typo and is clamped to `1` with a warning.
-- `runOnInit` (boolean): Whether to run callback immediately (through
-  `safeInvoke`, so a rejection is caught rather than fatal)
+- `interval` (number): Time in seconds between executions
+- `runOnInit` (boolean): Whether to run callback immediately
 
 **`unregister(key)`**
 - Removes a job from the scheduler
@@ -75,44 +39,16 @@ responsibility.
 - Clears existing timer
 - Peeks at next job in heap
 - Calculates delay: `(nextTrigger - now) * 1000` (converts seconds to milliseconds)
-- Clamps that delay to `setTimeout`'s 32-bit range (2,147,483,647 ms, ~24.9 days).
-  An unclamped delay overflows, is truncated to 1 ms, and re-arms every
-  millisecond while the job never comes due — `'86400000'` (a day expressed in
-  *milliseconds*) measures ~790 wakeups a second and ~8 GB of stderr a day.
-  Clamping re-arms the remainder on the next pass, so a long interval works
-  rather than spinning.
 - Sets setTimeout for next job execution
 
 **`runDueJobs()`**
 - Processes all jobs with `nextTrigger <= now`
-- Reschedules each job **before** invoking it, then invokes through `safeInvoke`
-- Never awaits the callback — see "Error Handling" below
-- Skips a job whose previous invocation has not settled (one warning per stuck run)
+- Executes job callbacks with error handling
+- Reschedules each job after execution
 - Calls `scheduleNextRun()` when done
 
-**`safeInvoke(job, runOnInit=false)`**
-- The one place this class invokes a consumer callback
-- Catches synchronous throws and asynchronous rejections identically
-- Acquires and releases the job's `runningAtMs` in-flight guard
-
-**`release(job)`** / **`report(level, message)`**
-- Internal helpers of `safeInvoke`: clear a job's guard, and log without letting
-  the logger's own failure escape as an unhandled rejection
-
-**`toSeconds(interval)`**
-- Reads an interval as a whole-second count *without* the floor; returns `null`
-  when the value is not wholly numeric (`'1h'`, `'*/5 * * * *'`, `''`)
-- Uses `Number()`, never `parseInt`: `parseInt` stops at the first non-numeric
-  character and fails in the dangerous direction (`'1h'` → 1, `'1e3'` → 1), which
-  silently speeds a job up instead of rejecting it
-
-**`parseInterval(interval)`**
-- `toSeconds` with the `1` second floor applied; returns `null` on the same
-  inputs `toSeconds` rejects
-
 **`setNextTrigger(job)`**
-- Updates job's `nextTrigger` to `now + interval`, with the interval floored at
-  `1` second. The floor is load-bearing, not cosmetic — see "Error Handling"
+- Updates job's `nextTrigger` to `now + interval`
 - Uses `getTimestamp()` which returns **seconds**, not milliseconds
 
 **`log(text, key=null)`**
@@ -221,62 +157,24 @@ if (config.cron?.log) log.cron(`${tag} - ${text}:`);
 - `log.error()` for error conditions
 
 ### Error Handling
-**Never let errors crash the scheduler — and never `await` a consumer callback:**
-
-```javascript
-// Reschedule FIRST, then invoke without awaiting. `runDueJobs` returns void and
-// nothing here consumes the callback's result, so awaiting bought nothing and
-// cost the scheduler: a callback that never settled left the job absent from the
-// heap, starved every other job, and stopped the timer from re-arming.
-this.setNextTrigger(job);
-heap.push(job);
-
-this.safeInvoke(job);
-```
-
-All callback invocation goes through `safeInvoke`. Do **not** add a second call
-site — the guard, the catch and the error reporting all live there:
-
+**Never let errors crash the scheduler:**
 ```javascript
 try {
-  const result = job.callback();
-
-  if (result && typeof result.then === 'function') {
-    Promise.resolve(result)
-      // Braces: returning the report would put its promise back into the chain,
-      // and `.finally` passes a rejection straight through.
-      .catch(err => { this.report('error', `... ${describeError(err)}`); })
-      .finally(() => { this.release(job); })
-      .catch(() => {});          // a throwing handler must not escape either
-    return;
-  }
-
-  this.release(job);
+  await job.callback();
 } catch (err) {
-  this.release(job);
-  this.report('error', `... ${describeError(err)}`);
+  log.error(`Cron job "${job.key}" failed:`, err);
 }
+// Always reschedule job, even after error
+this.setNextTrigger(job);
+heap.push(job);
 ```
-
-Two rules that fall out of this and are easy to break:
-
-1. **Interpolate the error into the message.** `@stonyx/logs` reads a second
-   argument as `logToFile`, not as a format argument, so `log.error(msg, err)`
-   discards the error *and* forces a disk write on every failure.
-2. **Keep the drain loop's termination invariant.** Because nothing awaits, the
-   `while` loop in `runDueJobs` has no suspension point and `nextTrigger > now`
-   is its only exit condition. An interval that does not advance `nextTrigger`
-   (`NaN`, `0`, negative) spins the loop forever and blocks the event loop.
-   `setNextTrigger` floors the interval at 1 second for exactly this reason —
-   independently of `register`'s validation, since `jobs` is public, mutable
-   state and an interval can be changed after registration.
 
 ### Time Handling
 **Always use `getTimestamp()` for current time:**
 ```javascript
 // CORRECT
 const now = getTimestamp();
-job.nextTrigger = getTimestamp() + (this.parseInterval(job.interval) ?? 1);
+job.nextTrigger = getTimestamp() + parseInt(job.interval, 10);
 
 // WRONG - don't use Date.now() or other time sources
 const now = Date.now(); // WRONG: milliseconds instead of seconds

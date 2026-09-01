@@ -85,6 +85,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "stonyx": "0.2.3-beta.79"
+    "stonyx": "0.2.3-beta.76"
   }
 }

@@ -22,16 +22,32 @@ register(key, callback, interval, runOnInit=false) {
 
 ---
 
-## ~~`runOnInit` callback is not awaited~~ — RESOLVED (#36)
+## `runOnInit` callback is not awaited
 
-Both halves of this entry are fixed. `register(runOnInit)` and `runDueJobs` now
-route through a single `safeInvoke` helper that catches synchronous throws and
-asynchronous rejections identically.
+**File:** `src/main.js`, `register()` method (line 79)
 
-The suggested fix recorded here — *"add `await` … and make `register()` async"* —
-was **rejected**: `register()` must stay synchronous and `void` for its consumer
-(`stonyx-orm/src/db.ts`), and `runDueJobs` must **not** await the callback, as
-awaiting is what let one hung job starve the whole scheduler. See
-`docs/architecture.md` § Error Handling for the shape that replaced it.
+When `runOnInit` is `true`, the callback is invoked synchronously without `await`:
 
-Deletion of this file is tracked by #41.
+```javascript
+if (runOnInit) {
+  try {
+    callback();          // not awaited
+  } catch (err) {
+    log.error(`Cron job "${key}" failed on init:`, err);
+  }
+}
+```
+
+This is inconsistent with `runDueJobs()`, which does await the callback:
+
+```javascript
+try {
+  await job.callback();  // awaited
+} catch (err) {
+  log.error(`Cron job "${job.key}" failed:`, err);
+}
+```
+
+**Impact:** If the callback is async and throws, the rejection will not be caught by the `try/catch` block in `register()`. The error becomes an unhandled promise rejection instead of being logged.
+
+**Suggested fix:** Add `await` to the `callback()` call in the `runOnInit` branch and make `register()` async, or wrap in a `.catch()` handler.
