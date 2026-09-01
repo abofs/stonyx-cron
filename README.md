@@ -35,14 +35,6 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 |  `register`  | `key: string, callback: Function, interval: number, runOnInit?: boolean` | Register a new job with a given interval in seconds. If `runOnInit` is true, the job runs immediately upon registration. |
 | `unregister` |                               `key: string`                              | Remove a previously registered job.                                                                                      |
 
-> **Callback semantics.** Callbacks are invoked fire-and-forget: `Cron` never waits for one to settle, and reschedules a job *before* invoking it. Two *different* jobs that fall due on the same tick may therefore overlap.
->
-> A job that is still running when it next falls due is skipped — and **keeps** being skipped until that invocation settles. One warning is logged per stuck run (not per tick), including how long the invocation has been running. `Cron` provides no timeout by design, so **bounding your own callback is your responsibility**: a promise that never settles means that job never runs again for the lifetime of the process. Other jobs are unaffected.
->
-> Synchronous throws and asynchronous rejections are both caught and reported through `log.error`, with the error's stack interpolated into the message. Neither can stop the scheduler.
->
-> `interval` is **whole seconds, as a string**, and the value must be *wholly* numeric. `register` throws a `TypeError` on anything else — including **partially** numeric values: `'1h'`, `'30s'` and `'5m'` are rejected outright, **not** read as 1, 30 and 5 seconds. Cron expressions are rejected for the same reason; use `CronService` (`@stonyx/cron/service`) for those, and an empty string is rejected too. The interval is read with `Number()`, so exponent notation and surrounding whitespace resolve at full value (`'1e3'` is 1000 seconds, `' 60 '` is 60). A value that *is* wholly numeric but below `1` (`'0'`, `'-5'`) is interpretable as “as often as possible” and is clamped to `1` second with a warning rather than rejected. Intervals longer than `setTimeout`'s range (~24.9 days) are scheduled in hops rather than overflowing the timer, so they run on schedule.
-
 > `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
 
 ## Configuration
