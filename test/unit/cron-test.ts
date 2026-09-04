@@ -220,7 +220,10 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     await clock.tickAsync(6000);
 
     assert.strictEqual(hang.callCount, 1, 'precondition: the hung job was actually driven once');
-    assert.ok(probe.callCount >= 2, `co-registered job kept firing while "hang" was stuck (fired ${probe.callCount}x)`);
+    // Strict, not `>= 2`. Under fake timers a '2's interval over 6000ms is
+    // deterministically 3, so an exact count also catches OVER-firing — a
+    // stacking regression that a `>=` bound would wave through.
+    assert.strictEqual(probe.callCount, 3, `co-registered job fired on every due tick while "hang" was stuck (fired ${probe.callCount}x)`);
   });
 
   test('AC1 — the hung job stays in the heap and the timer stays armed', async function (assert) {
@@ -358,7 +361,7 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     // one rejection marks the job permanently in-flight and it never runs again
     // — silent per-job scheduler death, re-entering through this fix's own
     // mechanism.
-    assert.ok(cb.callCount >= 2, `rejecting job still fires on later ticks (fired ${cb.callCount}x)`);
+    assert.strictEqual(cb.callCount, 3, `rejecting job still fires on every later tick (fired ${cb.callCount}x)`);
   });
 
   test('a job that throws synchronously keeps running on later ticks', async function (assert) {
@@ -369,7 +372,39 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
 
     await clock.tickAsync(3000);
 
-    assert.ok(cb.callCount >= 2, `throwing job still fires on later ticks (fired ${cb.callCount}x)`);
+    assert.strictEqual(cb.callCount, 3, `throwing job still fires on every later tick (fired ${cb.callCount}x)`);
+  });
+
+  // The guard is `if (result && typeof result.then === 'function')`. Every other
+  // test drives only the `!result` clause (sinon spies return `undefined`), so
+  // the second clause — a truthy, non-thenable return — was the one uncovered
+  // sub-branch of the helper. Asserted SYNCHRONOUSLY and deliberately: the
+  // documented reason for duck-checking rather than wrapping in
+  // `Promise.resolve(result)` is that the synchronous path must clear the guard
+  // in the same tick, not a microtask later. Awaiting first would flush the
+  // microtask and make the assertion true either way.
+  test('a callback returning a truthy non-thenable releases its guard in the same tick', function (assert) {
+    const cb = sinon.stub().returns(42 as unknown as void);
+
+    cron.register('truthy', cb, '1', true);
+
+    assert.strictEqual(cb.callCount, 1, 'precondition: the callback ran on init and returned a non-thenable');
+    assert.strictEqual(
+      cron.jobs['truthy']?.runningAtMs,
+      undefined,
+      'in-flight guard released synchronously, before any microtask could run',
+    );
+    assert.strictEqual(cron.jobs['truthy']?.skipReported, false, 'skip-report flag reset with the guard');
+  });
+
+  test('a callback returning a truthy non-thenable keeps firing on later ticks', async function (assert) {
+    const cb = sinon.stub().returns(42 as unknown as void);
+
+    cron.register('truthy', cb, '1');
+
+    await clock.tickAsync(3000);
+
+    assert.strictEqual(cb.callCount, 3, `non-thenable-returning job fired on every due tick (fired ${cb.callCount}x)`);
   });
 
   test('unregister of a still-running job actually stops it', async function (assert) {
@@ -422,7 +457,7 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
 
     // Pins the outer guards: the drain loop must still re-arm, and nothing may
     // reach the process as an unhandled rejection.
-    assert.ok(probe.callCount >= 4, `co-registered job kept firing (fired ${probe.callCount}x)`);
+    assert.strictEqual(probe.callCount, 5, `co-registered job kept firing (fired ${probe.callCount}x)`);
     assert.notStrictEqual(cron.timer, handleBefore, 'scheduler re-armed rather than dying with a fired handle');
     assert.strictEqual(unhandled.length, 0, 'no unhandled rejection escaped the scheduler tick');
   });
