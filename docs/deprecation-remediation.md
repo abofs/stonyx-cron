@@ -201,6 +201,51 @@ npm whoami --registry https://registry.npmjs.org   # must succeed
 
 `npm deprecate` is idempotent for identical text, so `--apply` is safe to re-run.
 
+### If `--apply` aborts partway through
+
+`do_apply` runs under `set -e` and writes to the registry version-by-version — 22
+separate `npm deprecate` calls, each of which prompts for a one-time password. If any one
+of them fails (mistyped OTP, expired session, network drop, `Ctrl-C`) the script exits
+immediately, and the versions it had already reached keep the corrected text while the
+rest still carry the original. That mixed state is what a partial apply looks like:
+`--check` exits 1 and reports the unreached versions as `still says 'the latest version'`
+while the reached ones pass.
+
+Recovery is simply to re-run `--apply` from the top. `npm deprecate` is idempotent for
+identical text, so re-processing the versions that already converged is a no-op and there
+is no need to work out where it stopped — do not try to resume from a partial list. Then
+re-run `--check`: it compares every version's message against the exact replacement text,
+so a green `--check` is the confirmation that all 22 have converged on one string.
+
+### Rolling back
+
+**Do not run `npm deprecate <pkg>@<version> ""`.** The empty-string form does not restore
+the previous message — it *un-deprecates* the version, deleting the `deprecated` field
+outright. Run against this set it would strip the warning from all 22 versions, including
+the 21 that shipped a real leaked credential (`0.2.1-alpha.0` and `0.2.1-beta.0` through
+`beta.19`), leaving them installable with no notice at all. That is strictly worse than
+either the original text or the corrected one, and it is the first thing an operator
+reaching for an undo will find in the `npm deprecate` docs.
+
+The correct rollback is to **re-apply the original deprecation string**. That string is
+quoted verbatim under [The defect](#the-defect) above; for `@stonyx/cron` the rollback
+value is:
+
+```
+This version inadvertently included .git/config with exposed credentials. Please upgrade to the latest version.
+```
+
+Apply it exactly the way `--apply` applies the corrected text — version-by-version across
+the same 22-version list, never as a semver range, for the reason in
+[Why the script iterates instead of using a range](#why-the-script-iterates-instead-of-using-a-range).
+Afterwards `--check` is *expected* to exit 1, reporting all 22 as `still says 'the latest
+version'`; that is the pre-remediation red state restored, not a failed rollback.
+
+Rolling back reinstates the closed loop this remediation exists to fix, so it is a last
+resort rather than a routine undo. The change is registry metadata only and is reversible
+in both directions — there is nothing lost by leaving the corrected text in place while a
+concern is investigated.
+
 ### Why the script iterates instead of using a range
 
 `npm deprecate` takes a semver **range**, and this affected set is not expressible
