@@ -152,18 +152,30 @@ do_check() {
   [ "$n" -eq 0 ] || { echo "   FAIL"; fail=1; }
 
   # AC(refined)1: the self-reference is gone from all 22.
-  echo "== the self-defeating text is gone from all ${#VERSIONS[@]} versions =="
+  #
+  # The per-version assertion is an EXACT compare against $MESSAGE, not a
+  # substring test. A substring test passes on any text that happens to contain
+  # the right fragments, so it cannot tell two different corrected texts apart --
+  # which is exactly the residue a partial `--apply` finished by a different
+  # revision of this script would leave: some versions on one wording, some on
+  # another, every one of them passing. Exact compare makes convergence on a
+  # single string the thing being asserted. The substring tests are kept, but
+  # only to label WHY a version failed.
+  echo "== all ${#VERSIONS[@]} versions carry the exact replacement text =="
   for v in "${VERSIONS[@]}"; do
     local msg
     msg=$(npm view "${PKG}@${v}" deprecated 2>/dev/null || true)
     if [ -z "$msg" ]; then
       echo "   FAIL ${v}: no deprecation message at all"
       fail=1
-    elif [[ "$msg" == *"the latest version"* ]]; then
-      echo "   FAIL ${v}: still says 'the latest version'"
-      fail=1
-    elif [[ "$msg" != *"${PKG}@beta"* ]]; then
-      echo "   FAIL ${v}: does not name ${PKG}@beta"
+    elif [ "$msg" != "$MESSAGE" ]; then
+      if [[ "$msg" == *"the latest version"* ]]; then
+        echo "   FAIL ${v}: still says 'the latest version' (not yet applied)"
+      elif [[ "$msg" != *"${PKG}@beta"* ]]; then
+        echo "   FAIL ${v}: does not name ${PKG}@beta"
+      else
+        echo "   FAIL ${v}: text differs from MESSAGE (mixed/stale wording)"
+      fi
       fail=1
     fi
   done
