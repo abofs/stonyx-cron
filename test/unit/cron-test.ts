@@ -138,23 +138,107 @@ module('[Unit] Cron', function (hooks) {
 module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
   setupIntegrationTests(hooks);
 
-  test('AC1 — a job whose callback never settles does not stop other jobs from firing', function (assert) {
-    assert.ok(true, 'TODO');
+  let cron: Cron;
+  let clock: SinonFakeTimers;
+  let unhandled: unknown[];
+  let captureRejection: (reason: unknown) => void;
+
+  hooks.beforeEach(async function () {
+    Cron.instance = null;
+    cron = new Cron();
+    await cron.init();
+
+    unhandled = [];
+    captureRejection = reason => unhandled.push(reason);
+    process.on('unhandledRejection', captureRejection);
+
+    clock = sinon.useFakeTimers({ shouldAdvanceTime: false });
   });
 
-  test('AC1 — the hung job stays in the heap and the timer stays armed', function (assert) {
-    assert.ok(true, 'TODO');
+  hooks.afterEach(function () {
+    process.off('unhandledRejection', captureRejection);
+    Object.keys(cron.jobs).forEach(key => cron.unregister(key));
+    if (cron.timer) clearTimeout(cron.timer);
+    sinon.restore();
+    config.cron.log = false;
+    Cron.instance = null;
   });
 
-  test('AC2 — an async runOnInit rejection is logged, not left unhandled', function (assert) {
-    assert.ok(true, 'TODO');
+  test('AC1 — a job whose callback never settles does not stop other jobs from firing', async function (assert) {
+    // The hung promise is never awaited by the test — the clock is advanced and
+    // the co-registered probe's counter is asserted, so a regression fails the
+    // assertion instead of hanging the runner.
+    const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+    const probe = sinon.spy();
+
+    cron.register('hang', hang, '1');
+    cron.register('probe', probe, '2');
+
+    await clock.tickAsync(6000);
+
+    assert.strictEqual(hang.callCount, 1, 'precondition: the hung job was actually driven once');
+    assert.ok(probe.callCount >= 2, `co-registered job kept firing while "hang" was stuck (fired ${probe.callCount}x)`);
+  });
+
+  test('AC1 — the hung job stays in the heap and the timer stays armed', async function (assert) {
+    const hang = sinon.stub().callsFake(() => new Promise<void>(() => {}));
+
+    cron.register('hang', hang, '1');
+
+    await clock.tickAsync(6000);
+
+    assert.strictEqual(hang.callCount, 1, 'precondition: the hung job was actually driven once');
+    assert.ok(cron.heap.items.some(item => item.key === 'hang'), 'hung job is still present in the heap');
+    assert.notStrictEqual(cron.timer, null, 'scheduler timer is still armed');
+  });
+
+  test('AC2 — an async runOnInit rejection is logged, not left unhandled', async function (assert) {
+    const errorSpy = sinon.spy(log, 'error');
+
+    cron.register('asyncInit', async () => {
+      throw new Error('async boom');
+    }, '300', true);
+
+    await clock.tickAsync(0);
+
+    assert.strictEqual(unhandled.length, 0, 'no unhandled rejection escaped register()');
+    assert.ok(
+      errorSpy.calledWithMatch(sinon.match(/Cron job "asyncInit" failed on init/)),
+      'async init failure was logged',
+    );
   });
 
   test('AC2 — a synchronous runOnInit throw is still logged and still scheduled', function (assert) {
-    assert.ok(true, 'TODO');
+    const errorSpy = sinon.spy(log, 'error');
+
+    cron.register('syncInit', () => {
+      throw new Error('sync boom');
+    }, '300', true);
+
+    assert.ok(
+      errorSpy.calledWithMatch(sinon.match(/Cron job "syncInit" failed on init/)),
+      'sync init failure is still logged',
+    );
+    assert.ok(cron.heap.items.some(item => item.key === 'syncInit'), 'job is still scheduled after a sync init throw');
   });
 
-  test('AC3 — a job still running when next due is skipped, then resumes once it settles', function (assert) {
-    assert.ok(true, 'TODO');
+  test('AC3 — a job still running when next due is skipped, then resumes once it settles', async function (assert) {
+    config.cron.log = true;
+    const cronLog = sinon.spy(log, 'cron');
+
+    let release: () => void = () => {};
+    const slow = sinon.stub().callsFake(() => new Promise<void>(resolve => { release = resolve; }));
+
+    cron.register('slow', slow, '1');
+
+    await clock.tickAsync(3000);
+
+    assert.strictEqual(slow.callCount, 1, 'in-flight job was invoked exactly once across three due ticks');
+    assert.ok(cronLog.calledWithMatch(sinon.match(/still running/)), 'skipped run was logged');
+
+    release();
+    await clock.tickAsync(1000);
+
+    assert.strictEqual(slow.callCount, 2, 'job is invoked again on the next due tick once it settles');
   });
 });
