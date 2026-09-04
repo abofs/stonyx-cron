@@ -9,3 +9,4 @@
 - [Project Structure](project-structure.md) -- Source layout and component overview
 - [Improvements](improvements.md) -- Tracked improvement opportunities
 - [Release](release.md) -- Release process
+- [Deprecation Remediation](deprecation-remediation.md) -- Corrective deprecation text for the published versions that shipped `.git/config`
