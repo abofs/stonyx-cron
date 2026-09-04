@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       stonyx:
-        specifier: 0.2.3-beta.84
-        version: 0.2.3-beta.84
+        specifier: 0.2.3-beta.85
+        version: 0.2.3-beta.85
     devDependencies:
       '@stonyx/utils':
         specifier: 0.2.3-beta.26
@@ -272,8 +272,8 @@ packages:
   sinon@21.0.3:
     resolution: {integrity: sha512-0x8TQFr8EjADhSME01u1ZK31yv2+bd6Z5NrBCHVM+n4qL1wFqbxftmeyi3bwlr49FbbzRfrqSFOpyHCOh/YmYA==}
 
-  stonyx@0.2.3-beta.84:
-    resolution: {integrity: sha512-E2XtPI2uIOfgQtIXtdXnwh52nsxq/KBaCWS0Y5LOdTSLJzlZzhdi/+KV+hi2yRvbBFiDJmb+W6f+qREQUcZY2A==}
+  stonyx@0.2.3-beta.85:
+    resolution: {integrity: sha512-IBHDIsPGOmR0EuMn4tZgiG9px/q6wSoPcKONi2JYopRIC1eBq420IC4WIC/W3LKGlcD8PG5hXyQwMSUVgErwQA==}
     hasBin: true
 
   supports-color@7.2.0:
@@ -481,7 +481,7 @@ snapshots:
       diff: 8.0.4
       supports-color: 7.2.0
 
-  stonyx@0.2.3-beta.84:
+  stonyx@0.2.3-beta.85:
     dependencies:
       '@stonyx/logs': 1.0.1-beta.20
       '@stonyx/utils': 0.2.3-beta.26
