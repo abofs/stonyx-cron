@@ -44,8 +44,8 @@ set -euo pipefail
 PKG="@stonyx/cron"
 
 # The affected set: every published version whose tarball contains at least one
-# `package/.git/` entry. Verified 2026-09-04 by downloading all 142 published
-# tarballs and running `tar tzf | grep -c '^package/\.git/'` against each.
+# `package/.git/` entry. Verified 2026-09-04 by downloading all 142 tarballs
+# published as of that measurement and running `tar tzf | grep -c '^package/\.git/'` against each.
 # Result: exactly these 22 returned a non-zero count; the other 120 returned 0.
 # This set is also exactly equal to the set already carrying a `deprecated`
 # field, so the rewrite neither widens nor narrows the deprecation.
