@@ -2,7 +2,21 @@
  * CronService - the main API for advanced job scheduling.
  *
  * Manages jobs in memory with a min-heap for efficient next-job lookup.
- * All state mutations are serialized via async locking.
+ *
+ * Async locking, but never around the consumer callback. Execution is split
+ * into three phases: claim (locked), invoke (UNLOCKED), settle (locked). Only
+ * phases 1 and 3 are serialized; the critical section deliberately excludes
+ * phase 2, so a consumer callback that never settles cannot wedge the lock
+ * chain and block add/update/remove. See `run()` and `#executeClaimed`.
+ *
+ * CONSUMER NOTE — this class is NOMINALLY typed. It carries ECMAScript hard-
+ * private members, so `dist/service.d.ts` emits `#private;` on the class and a
+ * structurally-built test double will not assign to `CronService`
+ * (`TS2741: Property '#private' is missing`). The break is one-directional and
+ * has a zero-cost workaround: `extends CronService` still compiles, and
+ * assigning a real `CronService` to your own hand-written interface still
+ * compiles. Declare your own interface and depend on that rather than
+ * hand-building a `CronService`-typed mock. See README's `CronService` section.
  */
 import config from 'stonyx/config';
 import log from 'stonyx/log';
@@ -71,33 +85,43 @@ interface HeapEntry extends HeapItem {
   key: string;
 }
 
-interface JobDueResult {
+/**
+ * Why a `run()` did not invoke the callback. Exported so a consumer can write a
+ * total handler over it: the union is closed and narrowed (it was `string`
+ * before #34), so an exhaustive `switch` is now both possible and expected.
+ */
+export type SkipReason = 'not due' | 'already running' | 'removed';
+
+/** What a claim refused on. `'not due'` is decided before the claim is attempted. */
+type ClaimRefusal = Exclude<SkipReason, 'not due'>;
+
+export interface JobDueResult {
   status?: string;
   error?: string;
   summary?: string;
 }
 
-interface ExecuteResult {
+export interface ExecuteResult {
   status: string;
   error?: string;
   summary?: string;
   durationMs?: number;
   deleted?: boolean;
   /** Only set when `status` is `'skipped'`. */
-  reason?: 'not due' | 'already running' | 'removed';
+  reason?: SkipReason;
 }
 
-interface ServiceStatus {
+export interface ServiceStatus {
   started: boolean;
   jobCount: number;
   nextWakeAtMs: number | undefined;
 }
 
-interface ListOptions {
+export interface ListOptions {
   includeDisabled?: boolean;
 }
 
-type OnJobDueCallback = (job: Job) => Promise<JobDueResult | void> | JobDueResult | void;
+export type OnJobDueCallback = (job: Job) => Promise<JobDueResult | void> | JobDueResult | void;
 
 export default class CronService {
   jobs: Map<string, Job>;
@@ -325,6 +349,18 @@ export default class CronService {
       // makes them un-claimable by anyone else. Both must happen under the
       // same lock turn, or a concurrent run() could claim a job this batch has
       // already detached.
+      //
+      // This is the SECOND claim implementation — `#claimJob` is the other, and
+      // the two reach the same state by different routes. `#claimJob` guards
+      // with an explicit `job.state.runningAtMs` check; this path has no such
+      // check and relies entirely on `isDue`'s `!job.state.runningAtMs` clause
+      // (`job.ts`) to keep `findDueJobs` from re-claiming a job that `run()`
+      // already holds. THAT CLAUSE IS LOAD-BEARING HERE, not an optimisation:
+      // drop it and the timer path silently double-invokes a job that `run()`
+      // is mid-flight on, while `run()` keeps refusing correctly and looks
+      // healthy. The one-in-flight-invocation-per-job invariant this class
+      // advertises holds by two independent guards in two files; a change to
+      // either has to be checked against the other.
       const dueJobs = await locked(() => {
         const nowMs = Date.now();
         const due = this.findDueJobs(nowMs);
@@ -523,7 +559,7 @@ export default class CronService {
    * lock-held precondition cannot be expressed in the type system, so the
    * method must not be reachable from outside the class body.
    */
-  #claimJob(job: Job): 'already running' | 'removed' | null {
+  #claimJob(job: Job): ClaimRefusal | null {
     if (this.jobs.get(job.id) !== job) return 'removed';
     if (job.state.runningAtMs) return 'already running';
 
