@@ -2,6 +2,12 @@
 
 Tracking issue: [abofs/stonyx-cron#50](https://github.com/abofs/stonyx-cron/issues/50)
 
+> **Status: NOT YET APPLIED as of 2026-09-04.** All 22 affected versions still carry the
+> original self-defeating text. `--check` exits 1. Applying requires an npm account with
+> publish rights on the `@stonyx` scope; no such credential exists in this org today.
+> Update this block — do not delete it — when `--apply` has been run and `--check` prints
+> `ALL CHECKS PASS`.
+
 ## The defect
 
 22 published versions of `@stonyx/cron` shipped a `package/.git/config` file inside
@@ -13,10 +19,65 @@ That message is self-defeating. The `latest` dist-tag points at `0.2.0`, and `0.
 is itself one of the 22 affected versions. A user who obeys the notice installs the
 deprecated artifact again and sees the same warning. It is a closed loop.
 
-The severity is the loop, not credential exposure. Measured across all 22 affected
-tarballs, the `extraheader` count is 0 — the shipped `.git/config` is a workstation
-config (SSH remote, local branch names, editor metadata), not a CI checkout config.
-No credential is published.
+## Credential exposure — the affected set splits in two
+
+An earlier revision of this document claimed the `extraheader` count was 0 across all 22
+tarballs and that no credential was published. **That is true of `0.2.0` only, and false
+of the other 21.** Re-measured 2026-09-04 by downloading each tarball from `dist.tarball`,
+extracting it, and grepping the shipped `package/.git/config`:
+
+```
+0.2.0:          extraheader=0   remote=git@github.com:...      (packed from a workstation)
+0.2.1-alpha.0:  extraheader=1   remote=https://github.com/...  (packed from a CI checkout)
+0.2.1-beta.0:   extraheader=1   remote=https://github.com/...
+0.2.1-beta.4:   extraheader=1   remote=https://github.com/...
+0.2.1-beta.12:  extraheader=1   remote=https://github.com/...
+0.2.1-beta.19:  extraheader=1   remote=https://github.com/...
+```
+
+The `git@` vs `https://` remote is the tell. `0.2.0` was packed from a workstation clone;
+every `0.2.1-*` was packed from a CI checkout that had written an `http.extraheader`
+credential into `.git/config`.
+
+**Set 1 — `0.2.0` — metadata only.** SSH remote, local/private branch names, editor
+metadata. No credential. For this version the severity really is the loop, not exposure.
+
+**Set 2 — `0.2.1-alpha.0` and `0.2.1-beta.0` through `0.2.1-beta.19` (21 versions) —
+credential-bearing.** Each shipped an `http.extraheader` line carrying a real GitHub
+token. Across a sweep of all 1,389 published tarballs in the ten `abofs` packages, these
+21 are the only credential-bearing artifacts found. **Four distinct tokens:** three
+ephemeral `ghs_` GitHub Actions tokens on the earliest three publishes, then one shared
+`ghp_` classic PAT across the remaining 18 — consistent with a workflow swap off the
+default `GITHUB_TOKEN` around 2026-02-12. For this set the severity is a real, if now
+closed, credential leak *in addition to* the loop.
+
+### Was rotation required? Yes — and it is already done.
+
+**All four leaked tokens were tested against the GitHub API on 2026-09-04 and all four
+return HTTP 401 / Bad credentials. Every one is revoked.** There is no live exposure and
+no incident to open. This is recorded here explicitly so a future reader can answer the
+"was rotation ever required, and was it done" question from this file rather than having
+to re-derive it.
+
+Blast radius is bounded to the config file itself: only `package/.git/config` was ever
+included. No `objects/`, no `packed-refs`, no `logs/` — so no repository history or
+unpublished source left with these tarballs.
+
+### Why this does not change the remediation
+
+The replacement text below — *"shipped package/.git/config in the published tarball and
+must not be used"* — is accurate for both sets and is deliberately unchanged. Both sets
+warrant the same instruction: do not use these versions, install from the maintained beta
+channel. The split changes the *rationale recorded here*, not the action.
+
+### Divergence from the sibling package
+
+`@stonyx/events@0.1.0` measures `extraheader=0` with a `git@` remote, so the
+metadata-only framing in
+[stonyx-events/docs/deprecation-remediation.md](https://github.com/abofs/stonyx-events/blob/dev/docs/deprecation-remediation.md)
+is correct for that package and is intentionally **not** mirrored from this section. The
+two documents share wording where the facts are shared and diverge where they are not;
+they are kept accurate rather than identical.
 
 ## The decision
 
@@ -80,13 +141,45 @@ of `beta.95`'s content. It is what makes the message auditable.
 
 ## Applying it
 
-**This requires an npm token with publish rights on the `@stonyx` scope.** It is a
-registry metadata operation; there is no code change and nothing to release.
+**This requires an npm account with publish rights on the `@stonyx` scope, authenticated
+interactively with `npm login`. It is not a token, and there is no token to go looking
+for.** It is a registry metadata operation; there is no code change and nothing to
+release.
+
+### There is no npm publish token in this org
+
+Publishing authenticates via **GitHub OIDC trusted publishing**
+(`stonyx-workflows/docs/release.md:51,57`). The identity is minted per CI job, bound to a
+specific repository and package, and lives only for the duration of that job. It does not
+exist outside a workflow run and cannot be handed to an operator.
+
+`CASCADE_PAT` — the one secret the publish workflow declares — is a **GitHub** PAT used
+for cascade dispatch. It grants nothing on the `@stonyx` npm scope and is irrelevant here.
+
+An earlier revision of this runbook asserted the credential was an org-level GitHub
+secret, supported by `gh secret list --org abofs` returning HTTP 403. That 403 proves only
+that org-secret *enumeration* failed; it was converted into a positive claim about what
+one of those secrets is, and the workflow source falsifies it. Following the old runbook
+would have sent an operator hunting for a secret that does not exist.
+
+Do **not** mint a standing org-wide npm token to work around this. That escalation shape
+is what [abofs/stonyx-workflows#35](https://github.com/abofs/stonyx-workflows/issues/35)
+exists to prevent.
+
+### Who to ask
+
+All 22 affected versions here — and `@stonyx/events@0.1.0` — are **already deprecated**.
+That means `npm deprecate` was successfully run against this scope at some point, by
+someone. Whoever did that holds exactly the access this script needs. That turns a vague
+"find someone with credentials" into a specific, answerable question, and it is the
+fastest route to an executor.
 
 ```sh
-npm whoami                                  # must succeed
+./scripts/deprecation-remediation.sh --check   # read-only; run this FIRST
+npm login --registry https://registry.npmjs.org
+npm whoami --registry https://registry.npmjs.org   # must succeed
 ./scripts/deprecation-remediation.sh --apply
-./scripts/deprecation-remediation.sh --check
+./scripts/deprecation-remediation.sh --check   # must print ALL CHECKS PASS
 ```
 
 `npm deprecate` is idempotent for identical text, so `--apply` is safe to re-run.

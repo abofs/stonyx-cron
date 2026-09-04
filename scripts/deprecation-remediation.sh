@@ -16,7 +16,21 @@
 #   follow-up. There is no `npm dist-tag` call anywhere in this file.
 #
 # REQUIREMENTS
-#   An npm auth token with publish rights on the `@stonyx` scope.
+#   An npm ACCOUNT with publish rights on the `@stonyx` scope, authenticated
+#   interactively with `npm login`. Not a token.
+#
+#   There is no long-lived npm credential in this org and none should be minted
+#   for this. Publishing uses GitHub OIDC trusted publishing: a short-lived
+#   identity, bound to one repo and one package, minted per CI job. It does not
+#   exist outside a workflow run and cannot be handed to an operator.
+#   (`CASCADE_PAT`, the one secret the publish workflow declares, is a GitHub PAT
+#   used for cascade dispatch. It grants nothing on the npm registry.)
+#
+#   WHO HOLDS THIS ACCESS: every affected version across @stonyx/cron and
+#   @stonyx/events is ALREADY deprecated, so `npm deprecate` has been run
+#   successfully against this scope before, by someone. Whoever did that holds
+#   exactly the access this script needs -- that is the person to ask.
+#
 #   Verify with `npm whoami` before running.
 #
 # USAGE
@@ -78,8 +92,13 @@ usage() { echo "usage: $0 --check | --apply" >&2; exit 2; }
 require_auth() {
   if ! npm whoami >/dev/null 2>&1; then
     echo "FATAL: not authenticated to the npm registry." >&2
-    echo "       \`npm deprecate\` needs a token with publish rights on @stonyx." >&2
-    echo "       Run \`npm login\` (or export NPM_TOKEN) and retry." >&2
+    echo "       \`npm deprecate\` needs an npm ACCOUNT with publish rights on the" >&2
+    echo "       @stonyx scope. Run \`npm login\` and retry." >&2
+    echo "       There is no stored npm token in this org and none should be created:" >&2
+    echo "       publishing uses OIDC trusted publishing (short-lived, repo- and" >&2
+    echo "       package-bound, minted per CI job). Every affected version is already" >&2
+    echo "       deprecated, so whoever ran \`npm deprecate\` on this scope before" >&2
+    echo "       holds the access this needs." >&2
     exit 1
   fi
   echo "authenticated as: $(npm whoami)"
