@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
 import Cron from '@stonyx/cron';
@@ -142,11 +143,17 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
   let clock: SinonFakeTimers;
   let unhandled: unknown[];
   let captureRejection: (reason: unknown) => void;
+  let previousCronLog: boolean | undefined;
 
   hooks.beforeEach(async function () {
     Cron.instance = null;
     cron = new Cron();
     await cron.init();
+
+    // Captured, not assumed. Restoring to a hardcoded literal in `afterEach`
+    // silently corrupts the shared config singleton for every later module the
+    // day `test/config/environment.ts` changes its pin.
+    previousCronLog = config.cron.log;
 
     unhandled = [];
     captureRejection = reason => unhandled.push(reason);
@@ -160,7 +167,7 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     Object.keys(cron.jobs).forEach(key => cron.unregister(key));
     if (cron.timer) clearTimeout(cron.timer);
     sinon.restore();
-    config.cron.log = false;
+    config.cron.log = previousCronLog;
     Cron.instance = null;
   });
 
@@ -175,6 +182,28 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     assert.ok(
       resolved.endsWith('/dist/main.js'),
       `Cron under test is the built entry point (resolved to ${resolved})`,
+    );
+  });
+
+  // Requirement 1 of the reopen: "no public API change" has to be checked in the
+  // EMITTED declarations, not in source. `CronJob` is not exported by name but is
+  // structurally reachable through `jobs`, `heap` and `setNextTrigger`, so a new
+  // REQUIRED member breaks any consumer TS that builds a job object. Optional
+  // members are additive and safe.
+  test('the emitted CronJob type gains no required member', async function (assert) {
+    const dts = await readFile(new URL('../../dist/main.d.ts', import.meta.url), 'utf8');
+    const block = /interface CronJob extends HeapItem \{([\s\S]*?)\n\}/.exec(dts);
+
+    assert.ok(block, 'precondition: CronJob is present in the emitted declarations');
+
+    const required = [...(block?.[1] ?? '').matchAll(/^ {4}(\w+)(\??):/gm)]
+      .filter(m => m[2] !== '?')
+      .map(m => m[1]);
+
+    assert.deepEqual(
+      required.sort(),
+      ['callback', 'interval', 'key'],
+      `only the pre-existing members are required (got ${JSON.stringify(required)})`,
     );
   });
 
@@ -203,42 +232,73 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
 
     assert.strictEqual(hang.callCount, 1, 'precondition: the hung job was actually driven once');
     assert.ok(cron.heap.items.some(item => item.key === 'hang'), 'hung job is still present in the heap');
-    assert.notStrictEqual(cron.timer, null, 'scheduler timer is still armed');
+
+    // NOT `notStrictEqual(cron.timer, null)`. On `dev` the scheduler is dead and
+    // `timer` still holds the *already-fired* handle from the last tick, so that
+    // assertion is true in exactly the state its message claims to exclude — a
+    // check that cannot fail. A live scheduler re-arms, which replaces the
+    // handle; a dead one keeps the same object forever.
+    const handleAfterHang = cron.timer;
+    assert.notStrictEqual(handleAfterHang, null, 'precondition: a timer handle exists');
+
+    await clock.tickAsync(2000);
+
+    assert.notStrictEqual(
+      cron.timer,
+      handleAfterHang,
+      'scheduler re-armed with a NEW timer handle while the job stayed hung',
+    );
   });
 
   test('AC2 — an async runOnInit rejection is logged, not left unhandled', async function (assert) {
-    const errorSpy = sinon.spy(log, 'error');
+    const errorSpy = sinon.stub(log, 'error');
 
     cron.register('asyncInit', async () => {
-      throw new Error('async boom');
+      throw new Error('SENTINEL_ASYNC_BOOM');
     }, '300', true);
 
     await clock.tickAsync(0);
 
     assert.strictEqual(unhandled.length, 0, 'no unhandled rejection escaped register()');
+
+    const call = errorSpy.getCalls().find(c => /Cron job "asyncInit" failed on init/.test(String(c.args[0])));
+    assert.ok(call, 'async init failure was logged');
+
+    // The prefix alone is a vacuous assertion: `log.error(msg, err)` renders the
+    // prefix and drops the error entirely, because `@stonyx/logs` reads argument
+    // 2 as `logToFile`, not as a format argument. Assert the error TEXT, and
+    // assert nothing is passed in the `logToFile` slot.
     assert.ok(
-      errorSpy.calledWithMatch(sinon.match(/Cron job "asyncInit" failed on init/)),
-      'async init failure was logged',
+      String(call?.args[0]).includes('SENTINEL_ASYNC_BOOM'),
+      `the rejected error itself appears in the report (got: ${String(call?.args[0])})`,
     );
+    assert.strictEqual(call?.args.length, 1, 'log.error is called with exactly one argument (arg 2 is logToFile)');
   });
 
   test('AC2 — a synchronous runOnInit throw is still logged and still scheduled', function (assert) {
-    const errorSpy = sinon.spy(log, 'error');
+    const errorSpy = sinon.stub(log, 'error');
 
     cron.register('syncInit', () => {
-      throw new Error('sync boom');
+      throw new Error('SENTINEL_SYNC_BOOM');
     }, '300', true);
 
+    const call = errorSpy.getCalls().find(c => /Cron job "syncInit" failed on init/.test(String(c.args[0])));
+    assert.ok(call, 'sync init failure is still logged');
     assert.ok(
-      errorSpy.calledWithMatch(sinon.match(/Cron job "syncInit" failed on init/)),
-      'sync init failure is still logged',
+      String(call?.args[0]).includes('SENTINEL_SYNC_BOOM'),
+      `the thrown error itself appears in the report (got: ${String(call?.args[0])})`,
     );
+    assert.strictEqual(call?.args.length, 1, 'log.error is called with exactly one argument (arg 2 is logToFile)');
     assert.ok(cron.heap.items.some(item => item.key === 'syncInit'), 'job is still scheduled after a sync init throw');
   });
 
   test('AC3 — a job still running when next due is skipped, then resumes once it settles', async function (assert) {
-    config.cron.log = true;
-    const cronLog = sinon.spy(log, 'cron');
+    // Deliberately NOT enabling `config.cron.log`. A dropped execution reported
+    // through a channel a config flag can silence is indistinguishable from a
+    // healthy scheduler, so the skip signal is ungated — matching the sibling
+    // `CronService` handler in the same release.
+    assert.notOk(config.cron.log, 'precondition: cron logging is OFF for this test');
+    const warnSpy = sinon.stub(log, 'warn');
 
     let release: () => void = () => {};
     const slow = sinon.stub().callsFake(() => new Promise<void>(resolve => { release = resolve; }));
@@ -248,11 +308,156 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     await clock.tickAsync(3000);
 
     assert.strictEqual(slow.callCount, 1, 'in-flight job was invoked exactly once across three due ticks');
-    assert.ok(cronLog.calledWithMatch(sinon.match(/still running/)), 'skipped run was logged');
+    assert.ok(
+      warnSpy.calledWithMatch(sinon.match(/is still running after/)),
+      'skipped run was reported on the ungated channel with config.cron.log off',
+    );
 
     release();
     await clock.tickAsync(1000);
 
     assert.strictEqual(slow.callCount, 2, 'job is invoked again on the next due tick once it settles');
+  });
+
+  test('the stuck-job warning is emitted once per stuck run, not once per tick', async function (assert) {
+    const warnSpy = sinon.stub(log, 'warn');
+
+    let release: () => void = () => {};
+    const slow = sinon.stub().callsFake(() => new Promise<void>(resolve => { release = resolve; }));
+
+    cron.register('slow', slow, '1');
+
+    await clock.tickAsync(10_000);
+
+    const skips = () => warnSpy.getCalls().filter(c => /is still running after/.test(String(c.args[0]))).length;
+
+    // Ten due ticks, nine of them skipped. One line per tick is ~43,200/day for
+    // a single hung job at this interval, which pushes an operator to disable
+    // the only signal they have.
+    assert.strictEqual(slow.callCount, 1, 'precondition: the job really was stuck across ten ticks');
+    assert.strictEqual(skips(), 1, `stuck-job warning emitted once, not once per tick (got ${skips()})`);
+
+    // A later stuck run reports again — the flag bounds one run, not the job.
+    release();
+    await clock.tickAsync(2000);
+    assert.strictEqual(slow.callCount, 2, 'precondition: a second invocation started and is stuck too');
+
+    await clock.tickAsync(3000);
+    assert.strictEqual(skips(), 2, `the NEXT stuck run reports again (got ${skips()})`);
+  });
+
+  test('a job that rejects keeps running on later ticks', async function (assert) {
+    sinon.stub(log, 'error');
+    const cb = sinon.stub().callsFake(async () => { throw new Error('boom'); });
+
+    cron.register('rejecter', cb, '1');
+
+    await clock.tickAsync(3000);
+
+    // The in-flight guard must be released on the rejection path. If it is not,
+    // one rejection marks the job permanently in-flight and it never runs again
+    // — silent per-job scheduler death, re-entering through this fix's own
+    // mechanism.
+    assert.ok(cb.callCount >= 2, `rejecting job still fires on later ticks (fired ${cb.callCount}x)`);
+  });
+
+  test('a job that throws synchronously keeps running on later ticks', async function (assert) {
+    sinon.stub(log, 'error');
+    const cb = sinon.stub().callsFake(() => { throw new Error('boom'); });
+
+    cron.register('thrower', cb, '1');
+
+    await clock.tickAsync(3000);
+
+    assert.ok(cb.callCount >= 2, `throwing job still fires on later ticks (fired ${cb.callCount}x)`);
+  });
+
+  test('unregister of a still-running job actually stops it', async function (assert) {
+    let release: () => void = () => {};
+    const slow = sinon.stub().callsFake(() => new Promise<void>(r => { release = r; }));
+
+    cron.register('slow', slow, '1');
+    await clock.tickAsync(1500);
+    assert.strictEqual(slow.callCount, 1, 'precondition: job is in flight');
+
+    cron.unregister('slow');
+    release();
+    await clock.tickAsync(5000);
+
+    // On `dev` the hung job is absent from the heap when `unregister` runs, so
+    // `heap.remove` is a no-op and the settling callback re-pushes the
+    // *unregistered* job — it keeps firing forever. `unregister()` reported
+    // success and did nothing.
+    assert.strictEqual(slow.callCount, 1, 'unregistered job never fires again');
+  });
+
+  test('a callback returning a thenable whose `then` throws cannot stop the scheduler', async function (assert) {
+    // Not exotic: query builders and lazily-constructed deferreds expose `then`
+    // through a getter. Probing it outside the guard aborts the drain loop
+    // before `scheduleNextRun()` — defect #36's terminal state, with `timer`
+    // still non-null so the scheduler reads healthy.
+    const errorSpy = sinon.stub(log, 'error');
+    const evil = (() => ({ get then(): never { throw new Error('evil then'); } })) as unknown as () => void;
+    const probe = sinon.spy();
+
+    cron.register('evil', evil, '1');
+    cron.register('probe', probe, '1');
+
+    const handleBefore = cron.timer;
+    await clock.tickAsync(5000);
+
+    // Pins `invokeJob`'s guard specifically: if the thenable probe sits outside
+    // the `try`, the throw escapes before either of these can happen — nothing
+    // is reported, and the job's in-flight guard is never released, so `evil` is
+    // permanently wedged even though the scheduler survives.
+    assert.ok(
+      errorSpy.calledWithMatch(sinon.match(/Cron job "evil" failed/)),
+      'the throwing thenable was reported as a job failure',
+    );
+    assert.strictEqual(
+      cron.jobs['evil']?.runningAtMs,
+      undefined,
+      'the evil job released its in-flight guard rather than wedging permanently',
+    );
+
+    // Pins the outer guards: the drain loop must still re-arm, and nothing may
+    // reach the process as an unhandled rejection.
+    assert.ok(probe.callCount >= 4, `co-registered job kept firing (fired ${probe.callCount}x)`);
+    assert.notStrictEqual(cron.timer, handleBefore, 'scheduler re-armed rather than dying with a fired handle');
+    assert.strictEqual(unhandled.length, 0, 'no unhandled rejection escaped the scheduler tick');
+  });
+
+  test('the drain loop re-arms the scheduler even if invokeJob itself throws', async function (assert) {
+    const probe = sinon.spy();
+    cron.register('probe', probe, '1');
+
+    // Direct coverage for the two outer guards, which `invokeJob` being total
+    // otherwise makes unreachable: the `finally` in `runDueJobs` and the
+    // terminal `.catch` on the timer callback in `scheduleNextRun`.
+    const stub = sinon.stub(cron, 'invokeJob').throws(new Error('invokeJob exploded'));
+    const handleBefore = cron.timer;
+
+    await clock.tickAsync(1200);
+
+    assert.ok(stub.called, 'precondition: the throwing invokeJob was actually reached');
+    assert.notStrictEqual(cron.timer, handleBefore, 'scheduleNextRun() still ran despite the throw');
+    assert.strictEqual(unhandled.length, 0, 'the escaping throw did not become an unhandled rejection');
+  });
+
+  test('a newline in a job key cannot forge a log line', async function (assert) {
+    const warnSpy = sinon.stub(log, 'warn');
+    const key = 'a:\n[FORGED] Cron::admin - all jobs healthy';
+
+    cron.register(key, () => new Promise<void>(() => {}), '1');
+
+    await clock.tickAsync(3000);
+
+    const call = warnSpy.getCalls().find(c => /is still running after/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the stuck-job warning fired for the hostile key');
+    assert.notOk(
+      /[\r\n]/.test(String(call?.args[0])),
+      `the reported line carries no raw line terminator (got: ${JSON.stringify(String(call?.args[0]))})`,
+    );
+    assert.ok(String(call?.args[0]).includes('[FORGED]'), 'the key is still reported, escaped rather than dropped');
   });
 });
