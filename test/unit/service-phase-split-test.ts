@@ -25,10 +25,25 @@
  * Heap assertions are key-scoped (`items.filter(i => i.key === job.id)`),
  * never `items.length`.
  *
- * ASSERTION LABELLING: `precondition:` marks a setup check that proves the test
- * is not vacuous. `guard:` marks an assertion that also passes against the
- * pre-fix tree — present so a later change cannot silently break the property,
- * not as evidence for this one. No test here rests on a `guard:` alone.
+ * ASSERTION LABELLING — three labels, and the distinction between the first two
+ * is measured, not asserted:
+ *
+ *   `precondition:` a setup check that proves the test is not vacuous AND that
+ *     PASSES IN THE RED RUN against the pre-fix tree. This is the label a
+ *     reviewer leans on to rule out the harness trap, so it has to mean exactly
+ *     that: if it failed red, the assertions after it would carry no
+ *     information about what the fix changed. MEASURED against dev's
+ *     `src/service.ts`: all 23 hold in the red run.
+ *
+ *   `reached:` a non-vacuity check for a code path that DID NOT EXIST before
+ *     the fix, so it necessarily fails in the red run. Same job as a
+ *     `precondition:` — it proves the assertions after it are not vacuously
+ *     true — but it is not evidence of a pre-fix property and must not be
+ *     counted as one. Six assertions carry it.
+ *
+ *   `guard:` an assertion that also passes against the pre-fix tree — present
+ *     so a later change cannot silently break the property, not as evidence for
+ *     this one. No test here rests on a `guard:` alone.
  */
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
@@ -207,6 +222,87 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(service.get(job.id)?.name, 'Renamed From Inside', 'the self-update applied');
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the self-updated job holds exactly one heap entry');
     });
+
+    test('settle drops the entry a self-updating callback pushed, measured BEFORE the next timer pass', async function (assert) {
+      // The assertion above is real but its MEASUREMENT POINT is too late.
+      // `findDueJobs` pops entries and silently discards any whose job is not
+      // due, so a stale duplicate is erased by the next timer pass — and the
+      // test's trailing `tickAsync` gives it exactly that pass before it looks.
+      // Deleting `#settleJob`'s pre-insert `removeFromHeap` therefore left the
+      // whole suite green: the scheduler self-heals faster than the test looks.
+      //
+      // Two changes make this a genuine measurement. It goes through `run()`,
+      // which arms a timer but never fires one, and it asserts with NO trailing
+      // tick — so the heap is read at settle time, before anything can heal it.
+      let update!: Promise<Job>;
+
+      service.onJobDue = async (job) => {
+        // Re-push a heap entry for THIS job while it is claimed and detached.
+        // The callback is unlocked, so this genuinely interleaves.
+        update = service.update(job.id, { name: 'Renamed From Inside' });
+        await update;
+
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      const job = await service.add({ name: 'Self Updating', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      const result = await service.run(job.id, 'force');
+      await update;
+
+      assert.strictEqual(result.status, 'ok', 'precondition: the run settled normally');
+      assert.strictEqual(service.get(job.id)?.name, 'Renamed From Inside', 'precondition: the self-update applied, so it did push an entry');
+      assert.strictEqual(
+        heapEntriesFor(service, job.id),
+        1,
+        'exactly one heap entry at settle time — the pre-insert dedup dropped the callback\'s',
+      );
+    });
+
+    test('a job removed and re-registered under the same id keeps the replacement scheduled', async function (assert) {
+      // `#settleJob`'s guard compares IDENTITY, not id. That distinction is
+      // invisible while the id simply disappears — an id comparison refuses
+      // just the same. It only becomes load-bearing in the shape
+      // `start(initialJobs)` uses: the job is removed and a DIFFERENT object is
+      // registered under the same id while the original is still in flight. An
+      // id comparison would then take the settle branch for the replacement and
+      // `removeFromHeap(job.id)` would unschedule a live job that never ran.
+      const gate = deferred();
+
+      service.onJobDue = () => gate.promise;
+
+      await service.start();
+      const original = await service.add({ name: 'Original', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const run = probe(service.run(original.id, 'force'));
+      await clock.tickAsync(0);
+      assert.ok(original.state.runningAtMs, 'reached: the claim phase — the original is in flight');
+
+      // Rehydrate a DIFFERENT object under the same id while the original is
+      // still in flight — the exact shape `start(initialJobs)` produces when a
+      // consumer restarts the service from its own store.
+      const replacement: Job = structuredClone(original);
+      replacement.name = 'Replacement';
+
+      await service.remove(original.id);
+      service.stop();
+      await service.start([replacement]);
+
+      assert.strictEqual(replacement.id, original.id, 'precondition: the replacement reuses the id');
+      assert.notStrictEqual(replacement, original, 'precondition: it is a different object');
+      assert.strictEqual(heapEntriesFor(service, original.id), 1, 'precondition: the replacement is scheduled');
+      assert.false(run.settled(), 'precondition: the original run is still in flight');
+
+      gate.resolve();
+      await clock.tickAsync(0);
+
+      assert.strictEqual(heapEntriesFor(service, original.id), 1, 'the replacement is still scheduled — the old settle did not unschedule it');
+      assert.strictEqual(service.get(original.id), replacement, 'the replacement is the registered job');
+      assert.strictEqual(replacement.state.runningAtMs, undefined, 'the replacement was not marked running by the old settle');
+      assert.strictEqual(service.runs(original.id).length, 0, 'the old settle wrote no run-log row against the replacement');
+      assert.strictEqual(original.state.runningAtMs, undefined, 'the original released its own claim');
+    });
   });
 
   module('A4 — run() will not launch a concurrent second invocation', function () {
@@ -227,7 +323,7 @@ module('CronService — phase split (#34)', function (hooks) {
 
       assert.strictEqual(invocations, 1, 'precondition: the first run invoked the callback');
       assert.false(first.settled(), 'precondition: the first run has not settled');
-      assert.ok(service.get(job.id)?.state.runningAtMs, 'precondition: runningAtMs is set by the claim phase');
+      assert.ok(service.get(job.id)?.state.runningAtMs, 'reached: the claim phase ran and recorded runningAtMs');
 
       const second = probe<RunResult>(service.run(job.id, 'force'));
       await clock.tickAsync(0);
@@ -283,7 +379,7 @@ module('CronService — phase split (#34)', function (hooks) {
 
       const running = probe(service.run(job.id, 'force'));
       await clock.tickAsync(0);
-      assert.ok(job.state.runningAtMs, 'precondition: the job is claimed and in flight');
+      assert.ok(job.state.runningAtMs, 'reached: the claim phase — the job is in flight');
 
       await service.remove(job.id);
       assert.strictEqual(service.get(job.id), null, 'precondition: the remove() resolved rather than deadlocking');
@@ -470,7 +566,7 @@ module('CronService — phase split (#34)', function (hooks) {
         await clock.tickAsync(31_000);
         await clock.tickAsync(0);
 
-        assert.true(errorLog.called, 'precondition: the ungated per-job error reporter was reached');
+        assert.true(errorLog.called, 'reached: the ungated per-job error reporter');
         assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite a non-local exit from phase 2');
         assert.strictEqual(service.get(job.id)?.state.lastStatus, 'error', 'the error result was still applied');
         assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
@@ -500,7 +596,7 @@ module('CronService — phase split (#34)', function (hooks) {
         await clock.tickAsync(31_000);
         await clock.tickAsync(0);
 
-        assert.true(errorLog.called, 'precondition: the ungated per-job error reporter was reached');
+        assert.true(errorLog.called, 'reached: the ungated per-job error reporter');
         assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite the reporter throwing');
         assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
         assert.false(service.running, 'the scheduler released its re-entrancy latch');
@@ -689,7 +785,7 @@ module('CronService — phase split (#34)', function (hooks) {
         await clock.tickAsync(31_000);
         await clock.tickAsync(0);
 
-        assert.strictEqual(errorLog.callCount, 1, 'precondition: the ungated per-job reporter was reached');
+        assert.strictEqual(errorLog.callCount, 1, 'reached: the ungated per-job reporter');
         const line = errorLog.firstCall.args[0] as string;
         assert.strictEqual(line.split('\n').length, 1, 'the emitted record is a single line');
         assert.strictEqual(line.split('\r').length, 1, 'no carriage return survived either');
