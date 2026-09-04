@@ -23,6 +23,7 @@ interface CronJob extends HeapItem {
   callback: () => void | Promise<void>;
   interval: string;
   key: string;
+  running: boolean;
 }
 
 export default class Cron {
@@ -69,21 +70,20 @@ export default class Cron {
 
       if (config.debug) this.log('job has been triggered', job.key);
 
-      try {
-        await job.callback();
-      } catch (err) {
-        log.error(`Cron job "${job.key}" failed:`, err);
-      }
-
+      // Reschedule before invoking: a consumer callback is never awaited here,
+      // so a callback that hangs or rejects can no longer starve the drain loop
+      // or leave the job orphaned outside the heap.
       this.setNextTrigger(job);
       heap.push(job);
+
+      this.invokeJob(job, `Cron job "${job.key}" failed:`);
     }
 
     this.scheduleNextRun();
   }
 
   register(key: string, callback: () => void | Promise<void>, interval: string, runOnInit: boolean = false): void {
-    const job: CronJob = { callback, interval, key, nextTrigger: 0 };
+    const job: CronJob = { callback, interval, key, nextTrigger: 0, running: false };
     this.jobs[key] = job;
     this.setNextTrigger(job);
     this.heap.push(job);
@@ -93,11 +93,7 @@ export default class Cron {
     }
 
     if (runOnInit) {
-      try {
-        callback();
-      } catch (err) {
-        log.error(`Cron job "${key}" failed on init:`, err);
-      }
+      this.invokeJob(job, `Cron job "${key}" failed on init:`);
     }
 
     this.scheduleNextRun();
@@ -115,6 +111,44 @@ export default class Cron {
     if (config.debug) this.log('job has been unregistered', key);
 
     this.scheduleNextRun();
+  }
+
+  /**
+   * Invoke a consumer callback without ever blocking the caller.
+   *
+   * Synchronous throws and rejected thenables are both routed to `log.error`
+   * with `errorMessage`; a callback that never settles simply never clears its
+   * in-flight flag. The job is skipped (and logged) while a previous invocation
+   * is still running, so fire-and-forget cannot stack invocations on one job.
+   */
+  invokeJob(job: CronJob, errorMessage: string): void {
+    if (job.running) {
+      this.log('job is still running, skipping this run', job.key);
+      return;
+    }
+
+    job.running = true;
+    const settle = () => { job.running = false; };
+
+    let result: void | Promise<void>;
+
+    try {
+      result = job.callback();
+    } catch (err) {
+      log.error(errorMessage, err);
+      settle();
+      return;
+    }
+
+    if (!result || typeof (result as Promise<void>).then !== 'function') {
+      settle();
+      return;
+    }
+
+    (result as Promise<void>).then(settle, (err: unknown) => {
+      log.error(errorMessage, err);
+      settle();
+    });
   }
 
   setNextTrigger(job: CronJob): void {
