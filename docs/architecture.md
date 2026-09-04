@@ -145,6 +145,19 @@ import Cron from '@stonyx/cron';
 import MinHeap from '@stonyx/cron/min-heap';
 ```
 
+### Private Members — `#` for a lock-held precondition, module functions otherwise
+
+`CronService`'s `#claimJob`, `#settleJob` and `#executeClaimed` (#34) are the **first** use of ECMAScript hard-private anywhere in the `@stonyx/*` ecosystem. The existing precedents are `stonyx-orm`'s TypeScript `private` modifier and `stonyx-sockets`' bare `_` prefix. This records the ruling so the next module does not have to re-derive it.
+
+**The house rule: `#` when publishing the member would be a safety hazard, not merely untidy.** The three above take or release a claim, and each has a precondition — "must be called while holding the lock" — that the type system cannot express. A published `claimJob` is a supported way to perform `markRunning` + `removeFromHeap` with no guaranteed settle, which strands the job permanently: `isDue` is false forever once `runningAtMs` is set, `run()` refuses forever, `start(initialJobs)` rehydrates the state verbatim so it survives a restart, and `status()` reports the job healthy throughout. Removing that from the published surface is the whole point.
+
+Two things to know before reaching for it:
+
+- **The nominal-typing cost is inherent to class members, not to `#`.** Both options break structural assignability. Measured on this repo: `#private` produces `TS2741: Property '#private' is missing`; switching the same three to TypeScript `private` produces `TS2739: ... missing the following properties: executeClaimed, claimJob, settleJob` — the same break, *and* it leaks all three names into `dist/service.d.ts` as `private claimJob;`. Between the two class-member options `#` is strictly better. Note the break is one-directional: `extends` and assigning a real instance to a consumer's own interface both still compile.
+- **Module-level functions are the only option that preserves structural typing, and they are this repo's dominant helper idiom** — `job.ts`, `schedule.ts` and `normalize.ts` are entirely module-level functions over a `Job`, as is `describeError()` in `service.ts`. **Prefer them.** Reach for `#` only when the helper must close over private instance state, as the claim/settle pair does.
+
+Whichever is chosen, guard it: `test/unit/publish-surface-test.ts` asserts against the emitted `dist/service.d.ts` that `#private;` is present and that the three names are absent, because this repo has already been burned once by a published-surface property regressing silently (#30).
+
 ### Logging Patterns
 **Always check config before logging:**
 ```javascript

@@ -290,6 +290,12 @@ export default class CronService {
    * (`'removed'`). Before the phase split, a forced run against an in-flight
    * job launched a second concurrent invocation.
    *
+   * THROWS (rather than returning a skip) when `id` is not a registered job:
+   * `Error("Job not found: <id>")`. A job that disappears between this lookup
+   * and the claim is the `'removed'` skip above, not a throw — the two differ
+   * only by the timing of a race, and the second is a legitimate outcome
+   * whereas the first is a caller error.
+   *
    * CONCURRENCY: the same job is bounded to one in-flight invocation on every
    * path, and the timer path invokes due jobs one at a time. `run()` fan-out
    * across DIFFERENT jobs is deliberately unbounded — N concurrent `run()`
@@ -297,7 +303,17 @@ export default class CronService {
    * these serialized behind the module-global lock; that serialization was the
    * bug rather than the feature (one hung callback wedged every other caller),
    * so it is not restored here. The fan-out is caller-driven and the scheduler
-   * never produces it on its own.
+   * never produces it on its own. A per-invoke bound belongs above this layer;
+   * it is tracked on stonyx-cron#35 alongside the execution timeout.
+   *
+   * NOT FIXED HERE: the phase split fixes the LOCK wedge, not the TIMER. A
+   * callback that never settles still stops `onTimer`'s sequential loop
+   * forever — `running` stays true, every later tick early-returns and re-arms,
+   * and the hung job's batch siblings stay claimed and off-heap having never
+   * been invoked. CRUD still resolves and `status()` still reports
+   * `started: true`, so that failure is now silent where it used to be loud.
+   * Bounding the callback and releasing batch siblings is stonyx-cron#35. Do
+   * not read this method's doc as "the hang is fixed".
    */
   async run(id: string, mode: 'due' | 'force' = 'force'): Promise<ExecuteResult> {
     const job = this.jobs.get(id);
