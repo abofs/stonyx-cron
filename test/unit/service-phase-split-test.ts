@@ -220,6 +220,41 @@ module('CronService — phase split (#34)', function (hooks) {
     });
   });
 
+  module('restart — a stale claim must not rehydrate a permanently dead job', function () {
+    test('start(initialJobs) clears a runningAtMs left behind by a crash mid-flight', async function (assert) {
+      // Produce exactly the state a crash between claim and settle leaves in a
+      // consumer's store: claimed, never settled. Nothing reaps it — there is no
+      // lease on `runningAtMs` — so rehydrating it verbatim yields a job that is
+      // dead forever while `status()` reports it healthy: `isDue` is false
+      // because of the flag, `run()` answers 'already running' every time, and
+      // `update()` never touches the field. Same hazard the 'removed' early
+      // return in `#executeClaimed` already releases by hand.
+      const crashed = new CronService();
+      crashed.onJobDue = () => new Promise<void>(() => {});
+      await crashed.start();
+      const job = await crashed.add({ name: 'Crashed Mid Flight', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      assert.ok(job.state.runningAtMs, 'precondition: the claim is recorded on the object a store would persist');
+      crashed.stop();
+
+      // Restart against the same object, exactly as start(initialJobs) gets it.
+      let invoked = 0;
+      service.onJobDue = () => { invoked++; return { status: 'ok' }; };
+      await service.start([job]);
+
+      assert.strictEqual(job.state.runningAtMs, undefined, 'the stale claim was cleared on rehydration');
+
+      const manual = await service.run(job.id, 'force');
+      assert.strictEqual(manual.status, 'ok', 'run() is not refused with "already running"');
+      assert.strictEqual(invoked, 1, 'the callback actually fired after the restart');
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+      assert.true(invoked >= 2, 'the timer path fires the rehydrated job too');
+    });
+  });
+
   module('claim/settle integrity — a claim always gets a settle', function () {
     // Supporting coverage for AC5: the split must not be able to strand a job
     // off the heap with runningAtMs set, on any exit path.

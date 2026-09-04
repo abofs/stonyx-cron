@@ -97,6 +97,24 @@ export default class CronService {
 
     if (initialJobs) {
       for (const job of initialJobs) {
+        // A `runningAtMs` on a rehydrated job is always stale. The claim it
+        // records was taken by a process that is gone, so nothing will ever
+        // settle it, and nothing reaps it — there is no lease on the field
+        // (tracked on #35). Left in place it is a permanently dead job that
+        // still reports healthy: `isDue` returns false forever because of the
+        // flag, `run()` answers `'already running'` forever, `update()` never
+        // touches `state.runningAtMs`, and `status()` counts it like any other.
+        // The consumer's only recovery would be remove() + add(), losing the
+        // job id and its run history.
+        //
+        // Same hazard, same treatment as the hand-release on the `'removed'`
+        // path in `#executeClaimed`: a claim with no reachable settle must be
+        // released. Assigned directly rather than via `applyResult` for the same
+        // reason — this releases the claim and nothing else. The job did not
+        // run, so it gets no run-log row, no `lastStatus`, and no recomputed
+        // `nextRunAtMs`; it is rescheduled from the store's own value below.
+        job.state.runningAtMs = undefined;
+
         this.jobs.set(job.id, job);
         if (job.enabled && job.state.nextRunAtMs) {
           this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
