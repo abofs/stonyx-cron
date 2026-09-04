@@ -160,9 +160,16 @@ This affects:
 - Delay calculation in `scheduleNextRun()`: must multiply by 1000 for `setTimeout`
 
 ```javascript
-// CORRECT: Convert seconds to milliseconds for setTimeout
+// CORRECT: Convert seconds to milliseconds for setTimeout.
+// Note the terminal `.catch`: `runDueJobs` is async, so anything that escapes
+// it would otherwise surface as an unhandled rejection raised from a bare
+// timer callback. See Rule 3 under Error Handling below.
 const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
-this.timer = setTimeout(() => this.runDueJobs(), delay);
+this.timer = setTimeout(() => {
+  this.runDueJobs().catch(err => {
+    this.report('error', `Cron scheduler tick failed: ${describeError(err)}`);
+  });
+}, delay);
 ```
 
 ---
