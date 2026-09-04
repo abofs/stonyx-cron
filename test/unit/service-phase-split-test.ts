@@ -35,7 +35,8 @@ import sinon, { type SinonFakeTimers } from 'sinon';
 import log from 'stonyx/log';
 import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
-import { resetLock } from '../../src/locked.js';
+import type { Job } from '../../src/job.js';
+import { locked, resetLock } from '../../src/locked.js';
 
 const { module, test } = QUnit;
 
@@ -217,6 +218,135 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(second.value()?.status, 'skipped', 'second run reports skipped');
       assert.strictEqual(second.value()?.reason, 'already running', 'second run reports "already running"');
       assert.strictEqual(invocations, 1, 'the callback was not re-entered concurrently');
+    });
+  });
+
+  module("'removed' mid-flight — the state the AC1 fix newly makes reachable", function () {
+    // Before this change `remove()` deadlocked behind a hung callback, so
+    // "removed while claimed" was unreachable. Making `remove()` resolve is what
+    // brings the state into existence, and it is guarded in three separate
+    // places — `#claimJob`'s refusal, `#executeClaimed`'s membership re-check
+    // plus its hand-release of the claim, and `#settleJob`'s identity guard.
+    // Each of the tests below fails if its guard is removed.
+
+    test('run() detaches the heap entry for the duration of a YIELDING callback', async function (assert) {
+      // The claim-phase heap detach is what stops manual runs duplicating heap
+      // entries (AC2), and A6 cannot see it: A6's callback is synchronous, so
+      // `#settleJob`'s own `removeFromHeap` masks a missing detach inside the
+      // same turn. The one committed test with a genuine yield goes through the
+      // timer path, which batch-claims via `findDueJobs` and never reaches
+      // `#claimJob` at all. The uncovered combination is run() + a yield.
+      const gate = deferred();
+      service.onJobDue = () => gate.promise;
+
+      await service.start();
+      const job = await service.add({ name: 'Yielding Manual', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'precondition: one heap entry after add');
+
+      const running = probe(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.false(running.settled(), 'precondition: the callback is genuinely in flight');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'the claim phase detached the entry for the whole invocation');
+
+      gate.resolve();
+      await clock.tickAsync(0);
+
+      assert.true(running.settled(), 'the run settled');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle re-inserted exactly one entry');
+    });
+
+    test('a job removed while its own callback is in flight is not resurrected by settle', async function (assert) {
+      const gate = deferred();
+      service.onJobDue = () => gate.promise;
+
+      await service.start();
+      const job = await service.add({ name: 'Removed Mid Flight', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const running = probe(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+      assert.ok(job.state.runningAtMs, 'precondition: the job is claimed and in flight');
+
+      await service.remove(job.id);
+      assert.strictEqual(service.get(job.id), null, 'precondition: the remove() resolved rather than deadlocking');
+
+      gate.resolve();
+      await clock.tickAsync(0);
+
+      assert.true(running.settled(), 'the run settled');
+      assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released');
+      assert.strictEqual(heapEntriesFor(service, job.id), 0, 'settle did not resurrect a heap entry for a deleted job');
+      assert.strictEqual(service.runs(job.id).length, 0, 'settle did not resurrect a run-log row for a deleted job');
+    });
+
+    test("a job removed by a SIBLING's callback in the same due batch never fires", async function (assert) {
+      // The whole due batch is claimed under one lock turn, so B is already
+      // marked running and off the heap before A's callback starts. A resolved
+      // `remove()` still has to mean "this callback will not fire" — which is
+      // `#executeClaimed`'s membership re-check, reached through nothing but
+      // plain public API.
+      const invoked: string[] = [];
+      let victim: Job | null = null;
+
+      service.onJobDue = async (job) => {
+        invoked.push(job.name);
+        if (job.name === 'A') {
+          // Both jobs carry the same nextTrigger, so they are collected by the
+          // same `findDueJobs` call and marked running under the same lock turn.
+          // Asserting the claim from INSIDE A's callback is what proves it: if B
+          // were only picked up by a later timer pass this would be undefined
+          // and the test would be measuring the wrong thing entirely.
+          assert.ok(victim?.state.runningAtMs, 'precondition: B was claimed by the SAME due batch, before A ran');
+          await service.remove(victim!.id);
+        }
+        return { status: 'ok' };
+      };
+
+      await service.start();
+      await service.add({ name: 'A', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      victim = await service.add({ name: 'B', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.deepEqual(invoked, ['A'], "the removed job's callback must NOT fire");
+      assert.strictEqual(victim.state.runningAtMs, undefined, 'the claim on the detached object was released by hand');
+      assert.strictEqual(service.get(victim.id), null, 'B stays removed');
+      assert.strictEqual(heapEntriesFor(service, victim.id), 0, 'B has no heap entry');
+    });
+
+    test("remove() landing between run()'s lookup and its claim refuses the run", async function (assert) {
+      // `run()` looks the job up unlocked, then queues for the claim. An
+      // external lock holder makes that window deterministic: both the claim and
+      // the remove() queue behind it, and `locked()` resolves its own gate in a
+      // `finally` before its returned promise settles, so the remove() lands
+      // first.
+      let invoked = 0;
+      service.onJobDue = () => { invoked++; return { status: 'ok' }; };
+
+      await service.start();
+      const job = await service.add({ name: 'Raced', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const held = deferred();
+      const holder = locked(() => held.promise);
+      await clock.tickAsync(0);
+
+      const running = probe<RunResult>(service.run(job.id, 'force'));
+      const removed = probe(service.remove(job.id));
+
+      held.resolve();
+      await holder;
+      await clock.tickAsync(0);
+
+      assert.true(removed.settled(), 'precondition: the remove() resolved');
+      assert.true(running.settled(), 'precondition: the run settled rather than hanging');
+      assert.strictEqual(invoked, 0, 'the callback never fired for a removed job');
+      assert.strictEqual(job.state.runningAtMs, undefined, 'no stranded claim on the detached object');
+      assert.deepEqual(
+        running.value(),
+        { status: 'skipped', reason: 'removed' },
+        "the run reports 'removed'",
+      );
     });
   });
 
