@@ -46,10 +46,27 @@ metadata. No credential. For this version the severity really is the loop, not e
 credential-bearing.** Each shipped an `http.extraheader` line carrying a real GitHub
 token. Across a sweep of all 1,389 published tarballs in the ten `abofs` packages, these
 21 are the only credential-bearing artifacts found. **Four distinct tokens:** three
-ephemeral `ghs_` GitHub Actions tokens on the earliest three publishes, then one shared
-`ghp_` classic PAT across the remaining 18 — consistent with a workflow swap off the
-default `GITHUB_TOKEN` around 2026-02-12. For this set the severity is a real, if now
-closed, credential leak *in addition to* the loop.
+ephemeral `ghs_` GitHub Actions tokens and one shared `ghp_` classic PAT. For this set the
+severity is a real, if now closed, credential leak *in addition to* the loop.
+
+Token attribution, measured per tarball 2026-09-04:
+
+```
+ghs_ (3 distinct ephemeral GitHub Actions tokens, one each):
+  0.2.1-alpha.0   0.2.1-beta.0   0.2.1-beta.4
+
+ghp_ (1 shared classic PAT, 18 versions):
+  0.2.1-beta.1   0.2.1-beta.2   0.2.1-beta.3
+  0.2.1-beta.5  through  0.2.1-beta.19
+```
+
+An earlier revision of this document placed the three `ghs_` tokens on "the earliest three
+publishes" and read a workflow swap off the default `GITHUB_TOKEN` out of that ordering.
+**Both are wrong.** The split is not chronological: `beta.1` through `beta.3` carry the
+shared PAT while `beta.4`, published after them, carries an ephemeral token. The two
+credential types interleave, so the data does not support a clean swap date and no such
+date is claimed here. The counts themselves — three distinct `ghs_`, one `ghp_` shared
+across 18 — are unchanged and were re-measured.
 
 ### Was rotation required? Yes — and it is already done.
 
@@ -104,8 +121,8 @@ versions are permanent; only their metadata can change.
 
 ## Affected versions
 
-Verified 2026-09-04 by downloading all 142 published `@stonyx/cron` tarballs from
-`dist.tarball` and running `tar tzf | grep -c '^package/\.git/'` against each.
+Verified 2026-09-04 by downloading all 142 `@stonyx/cron` tarballs published as of that
+measurement from `dist.tarball` and running `tar tzf | grep -c '^package/\.git/'` against each.
 Exactly 22 returned a non-zero count. The other 120 returned 0.
 
 That set is exactly equal to the set already carrying a `deprecated` field — no
