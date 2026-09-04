@@ -84,20 +84,20 @@ register(key, callback, interval, runOnInit=false) {
   // ...
 }
 
-// Update stats in runDueJobs:
-async runDueJobs() {
-  // ...
-  try {
-    await job.callback();
-    job.stats.runCount++;
-    job.stats.lastRun = getTimestamp();
-  } catch (err) {
-    job.stats.errorCount++;
-    job.stats.lastError = err.message;
-    log.error(`Cron job "${job.key}" failed:`, err);
-  }
-  // ...
+// Record stats around invokeJob — do NOT add a second callback call site, and
+// do NOT await the callback (see docs/architecture.md § Error Handling).
+//
+// `runDueJobs` no longer has a point at which the callback has completed, so
+// post-run stats cannot be updated there at all. Hook `invokeJob` instead:
+invokeJob(job, runOnInit = false) {
+  job.stats.lastRun = getTimestamp();
+  job.stats.runCount++;
+
+  super.invokeJob(job, runOnInit);
 }
+
+// Errors are already caught inside invokeJob; hook error stats on its report
+// path rather than wrapping the callback again.
 
 // Add method to retrieve stats:
 getJobStats(key) {
@@ -152,30 +152,33 @@ register(key, callback, interval, runOnInit=false, oneTime=false) {
   // ...
 }
 
-// Modify runDueJobs to unregister one-time jobs:
-async runDueJobs() {
+// Modify runDueJobs to unregister one-time jobs.
+//
+// Three invariants to preserve: reschedule BEFORE invoking, invoke through
+// invokeJob without awaiting, and keep scheduleNextRun() in the `finally`.
+runDueJobs() {
   const now = getTimestamp();
   const { heap } = this;
 
-  while (!heap.isEmpty() && heap.peek().nextTrigger <= now) {
-    const job = heap.pop();
+  try {
+    while (!heap.isEmpty()) {
+      const next = heap.peek();
+      if (!next || next.nextTrigger > now) break;
+      const job = heap.pop();
 
-    try {
-      await job.callback();
-    } catch (err) {
-      log.error(`Cron job "${job.key}" failed:`, err);
-    }
+      if (job.oneTime) {
+        delete this.jobs[job.key];  // Don't reschedule
+        if (config.debug) this.log('one-time job completed', job.key);
+      } else {
+        this.setNextTrigger(job);
+        heap.push(job);
+      }
 
-    if (job.oneTime) {
-      delete this.jobs[job.key];  // Don't reschedule
-      if (config.debug) this.log('one-time job completed', job.key);
-    } else {
-      this.setNextTrigger(job);
-      heap.push(job);
+      this.invokeJob(job);
     }
+  } finally {
+    this.scheduleNextRun();
   }
-
-  this.scheduleNextRun();
 }
 ```
 
@@ -220,23 +223,38 @@ console.log(cron1 === cron2);  // true - same instance!
 **Implication:** Registering jobs on any instance affects the same scheduler.
 
 ### Job Callback Async Handling
-**Pitfall:** Not awaiting async callbacks
+**Pitfall:** assuming the scheduler waits for your callback. It does not.
 
-**Correct:**
+The scheduler invokes callbacks fire-and-forget. It reschedules the job *before*
+invoking it and never awaits the result, so one callback can never starve
+another. Rejections are still caught and reported — `invokeJob` attaches a
+`.catch()` to any thenable the callback **returns**.
+
+**Correct — return the promise so `Cron` can observe it:**
 ```javascript
 cron.register('job', async () => {
   await someAsyncOperation();
-}, 10);
+}, '10');
 ```
 
-The scheduler awaits the callback, so errors are caught properly.
-
-**Wrong:**
+**Wrong — the promise is not returned, so `Cron` cannot catch it:**
 ```javascript
 cron.register('job', () => {
-  someAsyncOperation();  // Not awaited - errors won't be caught!
-}, 10);
+  someAsyncOperation();  // floating: errors escape invokeJob's .catch()
+}, '10');
 ```
+
+**Two consequences you own as the caller:**
+
+- **Your callback must settle.** A job whose promise never settles is skipped on
+  every subsequent tick and never runs again for the lifetime of the process —
+  it is a permanently dead job. One warning is emitted per stuck run (not per
+  tick), on an ungated channel. `Cron` deliberately provides no timeout, so
+  bounding your own I/O is your responsibility.
+- **The same-job guarantee is per registration, not per key.** `unregister`
+  followed by `register` on a key whose invocation is still in flight builds a
+  fresh job object with a fresh guard, so the replacement can run alongside the
+  abandoned invocation.
 
 ### Heap Reference Equality
 **Pitfall:** Modifying job objects outside the scheduler

@@ -36,6 +36,7 @@
 - **Input normalization:** `normalizeJobInput` and `recoverFlatParams` handle AI-generated inputs that may have flat parameter structures or variant field names
 - **Timer capping:** `MAX_TIMER_DELAY_MS` is 60 seconds — even if the next job is hours away, the timer re-arms at most every 60s to handle newly added jobs and clock drift
 - **Rich subpath exports:** The package exports `./service`, `./cron-parser`, `./schedule`, `./job`, `./normalize`, `./locked`, `./run-log`, and `./min-heap` as independent entry points
+- **Two schedulers, not one.** Besides `CronService`, the package's default export is the legacy `Cron` singleton in `src/main.ts` (`register` / `unregister` / `runDueJobs`). It has its own execution contract: fire-and-forget (the callback is never awaited), reschedule-before-invoke, and a per-job in-flight guard (`job.runningAtMs`) that **skips** a due job whose previous invocation has not settled. Unlike `CronService.run()` it returns `void`, so the skip is invisible to the caller — which is why the wedged-job warning is reported ungated, on `log.warn`, once per stuck run. It has no timeout: a callback that never settles disables that one job permanently. See `docs/architecture.md` § Error Handling.
 
 ## Live Knowledge
 
