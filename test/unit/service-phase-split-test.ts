@@ -266,7 +266,16 @@ module('CronService — phase split (#34)', function (hooks) {
       // too. This falsifies "settle as a trailing statement": with phase 3 not
       // in a `finally`, any throw here skips it and permanently strands the
       // claim — off the heap, `runningAtMs` set, `isDue` false forever.
-      const errorLog = sinon.stub(log, 'error').throws(new Error('error transport exploded'));
+      // Rejects ASYNCHRONOUSLY, matching the real shape. `log.error` is a
+      // chronicle convenience method onto `async log(...)`, so every failure it
+      // can have is a rejection. A `.throws()` stub here is a synchronous stand-in
+      // for an asynchronous thing — the same defect class this PR fixes for
+      // `onJobDue` — and it leaves the assertion at the bottom of this test
+      // incapable of failing, because the escaping rejection it exists to catch
+      // is the one the stub cannot produce.
+      const errorLog = sinon.stub(log, 'error').callsFake(async () => {
+        throw new Error('error transport exploded');
+      });
 
       try {
         service.log = () => { throw new Error('log transport exploded'); };
@@ -287,6 +296,33 @@ module('CronService — phase split (#34)', function (hooks) {
       } finally {
         errorLog.restore();
         rejections.restore();
+      }
+    });
+
+    test('the ungated reporter throwing SYNCHRONOUSLY is contained too', async function (assert) {
+      // The sibling of the test above. `log` is a shared, consumer-reachable
+      // singleton, so the reporter can fail in either direction: a rejection
+      // out of chronicle's `async log`, or a synchronous throw from a replaced
+      // method or from evaluating the template literal. The call site needs a
+      // `try` AND a `.catch()`; this test is the half that guards the `try`.
+      const errorLog = sinon.stub(log, 'error').throws(new Error('error transport exploded synchronously'));
+
+      try {
+        service.log = () => { throw new Error('log transport exploded'); };
+        service.onJobDue = () => { throw new Error('callback blew up'); };
+
+        await service.start();
+        const job = await service.add({ name: 'Sync Log Explodes', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.true(errorLog.called, 'precondition: the ungated per-job error reporter was reached');
+        assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'settle ran despite the reporter throwing');
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
+        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+      } finally {
+        errorLog.restore();
       }
     });
 

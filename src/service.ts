@@ -306,8 +306,25 @@ export default class CronService {
           // that must not be able to throw: `log` is a shared singleton whose
           // transports can reach the filesystem, so its own failure is
           // swallowed rather than allowed to take the batch down.
+          //
+          // BOTH halves of that failure have to be caught, and they are caught
+          // by different constructs. `log.error` is a chronicle convenience
+          // method that returns `logAction(...)` -> `async log(...)`, so its
+          // console write, colour lookup, `mkdirSync` and `appendFile` all
+          // surface as REJECTIONS, never as synchronous throws. A bare call
+          // here escapes this `catch` entirely and terminates the process under
+          // Node's default `--unhandled-rejections=throw` — the handler written
+          // so it "must not be able to throw" would be the one taking the
+          // daemon down. The `try` covers the synchronous half (evaluating the
+          // template literal); `Promise.resolve(...).catch()` covers the async
+          // half. Deliberately not awaited: the batch must not block on a log
+          // transport, and `void` marks the floated promise as intentional.
           try {
-            log.error(`Cron — Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`);
+            void Promise.resolve(
+              log.error(`Cron — Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`),
+            ).catch(() => {
+              // Nothing left to report to.
+            });
           } catch {
             // Nothing left to report to.
           }
