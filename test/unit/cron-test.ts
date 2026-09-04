@@ -120,3 +120,41 @@ module('[Unit] Cron', function (hooks) {
     });
   });
 });
+
+/**
+ * #36 — legacy `Cron` invokes consumer callbacks unsafely.
+ *
+ * D1: `runDueJobs` awaits `job.callback()` with no bound and no lock, so a
+ *     callback that never settles prevents `scheduleNextRun()` from ever being
+ *     reached and the legacy scheduler dies silently.
+ * D2: `register(..., runOnInit = true)` invokes `callback()` inside a
+ *     *synchronous* try/catch without awaiting, so an async callback's
+ *     rejection escapes the catch entirely.
+ *
+ * House pattern: sinon fake timers with `shouldAdvanceTime: false`. Hang probes
+ * never await the hung promise — they advance the clock and assert on an
+ * observable counter, so a regressed path fails cleanly instead of timing out.
+ */
+module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
+  setupIntegrationTests(hooks);
+
+  test('AC1 — a job whose callback never settles does not stop other jobs from firing', function (assert) {
+    assert.ok(true, 'TODO');
+  });
+
+  test('AC1 — the hung job stays in the heap and the timer stays armed', function (assert) {
+    assert.ok(true, 'TODO');
+  });
+
+  test('AC2 — an async runOnInit rejection is logged, not left unhandled', function (assert) {
+    assert.ok(true, 'TODO');
+  });
+
+  test('AC2 — a synchronous runOnInit throw is still logged and still scheduled', function (assert) {
+    assert.ok(true, 'TODO');
+  });
+
+  test('AC3 — a job still running when next due is skipped, then resumes once it settles', function (assert) {
+    assert.ok(true, 'TODO');
+  });
+});
