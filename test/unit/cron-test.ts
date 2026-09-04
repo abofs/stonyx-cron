@@ -164,6 +164,20 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     Cron.instance = null;
   });
 
+  // Re-land guard (issue reopen, requirement 2): the 2026-09-01 revert wave was
+  // invisible because nothing asserted on `dist/`. This module's `Cron` is the
+  // self-referenced package entry, so every assertion below executes the built
+  // artifact rather than `src/`. Pin that, otherwise the coverage silently
+  // degrades to source-only the moment resolution changes.
+  test('the acceptance coverage below runs against the built artifact', function (assert) {
+    const resolved = import.meta.resolve('@stonyx/cron');
+
+    assert.ok(
+      resolved.endsWith('/dist/main.js'),
+      `Cron under test is the built entry point (resolved to ${resolved})`,
+    );
+  });
+
   test('AC1 — a job whose callback never settles does not stop other jobs from firing', async function (assert) {
     // The hung promise is never awaited by the test — the clock is advanced and
     // the co-registered probe's counter is asserted, so a regression fails the
