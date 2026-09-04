@@ -15,6 +15,32 @@ import RunLog from './run-log.js';
 
 const MAX_TIMER_DELAY_MS = 60_000;
 
+/** Longest error text that may reach a log line. Anything past this is truncated. */
+const MAX_LOGGED_ERROR_LENGTH = 512;
+
+/** Longest job name that may reach a log line. Anything past this is truncated. */
+const MAX_LOGGED_NAME_LENGTH = 120;
+
+/**
+ * Flatten a value for interpolation into a single log line.
+ *
+ * Chronicle writes `${timestamp} ${content}\n` to a newline-delimited file, so
+ * any `\r` or `\n` inside `content` ends the record early and everything after
+ * it is read back as a separate, attacker-shaped entry — including a forged
+ * `[timestamp] Cron — ...` prefix that is indistinguishable from a real one.
+ * Both values that reach these lines are untrusted: `job.name` is passed
+ * through `createJob` unvalidated and `normalize.ts` exists specifically to
+ * accept AI-shaped input, and an error message is arbitrary consumer-callback
+ * text. Newlines become the literal two characters so the content survives for
+ * a reader, and the length cap keeps one pathological value from swamping the
+ * file.
+ */
+function forLog(value: string, maxLength: number): string {
+  const flattened = value.replace(/\r\n|[\r\n\u2028\u2029]/g, '\\n');
+
+  return flattened.length > maxLength ? `${flattened.slice(0, maxLength)}...` : flattened;
+}
+
 /**
  * Describe a thrown value without ever throwing.
  *
@@ -22,12 +48,20 @@ const MAX_TIMER_DELAY_MS = 60_000;
  * `toString`/`Symbol.toPrimitive` throws, raises "Cannot convert object to
  * primitive value". Consumer callbacks throw arbitrary values, so the error
  * handler must not become a second failure source of its own.
+ *
+ * The `instanceof Error` branch needs the same guard as the other one. `Error`
+ * is subclassable and `message` is a plain writable property, so a consumer can
+ * hand back an `Error` whose `message` is a getter that throws, or one that is
+ * an object whose `toString` throws — `Error.prototype.message` is typed
+ * `string`, so TypeScript sees nothing wrong and the coercion is deferred to
+ * the caller's template literal, outside every guard here. That made `run()`
+ * reject instead of returning an `ExecuteResult`: a contract violation in the
+ * function written to prevent exactly that. Reading and coercing `message`
+ * inside the `try` is what closes it.
  */
 function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-
   try {
-    return String(err);
+    return err instanceof Error ? String(err.message) : String(err);
   } catch {
     return 'unknown error';
   }
@@ -339,7 +373,7 @@ export default class CronService {
           // transport, and `void` marks the floated promise as intentional.
           try {
             void Promise.resolve(
-              log.error(`Cron — Job "${job.name}" (${job.id}) execution failed unexpectedly: ${describeError(err)}`),
+              log.error(`Cron — Job "${forLog(job.name, MAX_LOGGED_NAME_LENGTH)}" (${job.id}) execution failed unexpectedly: ${forLog(describeError(err), MAX_LOGGED_ERROR_LENGTH)}`),
             ).catch(() => {
               // Nothing left to report to.
             });
@@ -459,7 +493,7 @@ export default class CronService {
       } catch (err: unknown) {
         status = 'error';
         error = describeError(err);
-        this.log(`Job "${job.name}" (${job.id}) failed: ${error}`);
+        this.log(`Job "${forLog(job.name, MAX_LOGGED_NAME_LENGTH)}" (${job.id}) failed: ${forLog(error, MAX_LOGGED_ERROR_LENGTH)}`);
       }
     } finally {
       // -- Phase 3: settle (locked) --

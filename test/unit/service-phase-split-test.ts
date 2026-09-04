@@ -32,6 +32,7 @@
  */
 import QUnit from 'qunit';
 import sinon, { type SinonFakeTimers } from 'sinon';
+import config from 'stonyx/config';
 import log from 'stonyx/log';
 import { setupIntegrationTests } from 'stonyx/test-helpers';
 import CronService from '../../src/service.js';
@@ -85,6 +86,23 @@ function captureUnhandledRejections(): { seen: () => unknown[]; restore: () => v
     seen: () => seen,
     restore: () => { process.off('unhandledRejection', handler); },
   };
+}
+
+/**
+ * Temporarily enable the config-gated log channel.
+ *
+ * `test/config/environment.ts` pins `cron.log: false` and it IS applied — the
+ * runner's tsx ESM loader resolves stonyx's `${basePath}.js` config specifier
+ * to the `.ts` file — so `service.log()` is a no-op for the whole suite by
+ * default. That is the right default (it is what makes the ungated-reporter
+ * test below meaningful), but it also means the gated path can only be
+ * exercised by flipping the flag for the duration of one test.
+ */
+function withGatedLoggingEnabled(): { restore: () => void } {
+  const previous = config.cron.log;
+  config.cron.log = true;
+
+  return { restore: () => { config.cron.log = previous; } };
 }
 
 module('CronService — phase split (#34)', function (hooks) {
@@ -523,6 +541,226 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(service.get(job.id)?.state.lastStatus, 'ok', 'settle applied the result');
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle re-inserted exactly one heap entry');
       assert.false(service.running, 'the scheduler released its re-entrancy latch');
+    });
+  });
+  module('error reporting is total and log-injection safe', function () {
+    // `describeError` and `forLog` are the only things standing between an
+    // arbitrary consumer-thrown value and a shared, newline-delimited log sink.
+    // Both are new in this PR and both were reachable in branches no test
+    // entered: replacing `describeError`'s whole body with `String(err)` left
+    // the suite fully green, and the `instanceof Error` branch returned
+    // `err.message` unguarded, deferring the coercion to the CALLER's template
+    // literal where no guard covers it.
+
+    /** An Error whose `message` getter throws — the unguarded branch's worst case. */
+    function errorWithHostileMessage(): Error {
+      const err = new Error('placeholder');
+      Object.defineProperty(err, 'message', {
+        get() { throw new Error('message getter exploded'); },
+      });
+
+      return err;
+    }
+
+    test('run() returns an error result when the thrown Error has a hostile message', async function (assert) {
+      // Pre-fix this REJECTED rather than returning: `describeError` handed back
+      // `err.message` unread, and `Job "..." failed: ${error}` coerced it one
+      // frame up, outside every try. A caller of run() got a rejected promise
+      // where the signature promises an ExecuteResult.
+      service.onJobDue = () => { throw errorWithHostileMessage(); };
+
+      await service.start();
+      const job = await service.add({ name: 'Hostile', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.status, 'error', 'run() resolved with an error result instead of rejecting');
+      assert.strictEqual(result.error, 'unknown error', 'the undescribable value fell through to the total fallback');
+      assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was still released');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle still re-inserted exactly one heap entry');
+    });
+
+    test('the timer path survives a thrown Error with a hostile message', async function (assert) {
+      // Same value on the other path. The ungated per-job reporter interpolates
+      // describeError's output directly, so an uncaught coercion here escapes
+      // the batch loop's per-job catch is not the point — it would throw while
+      // BUILDING the message the catch is trying to report.
+      const rejections = captureUnhandledRejections();
+      const errorLog = sinon.stub(log, 'error').resolves();
+
+      try {
+        service.onJobDue = () => { throw errorWithHostileMessage(); };
+
+        await service.start();
+        const job = await service.add({ name: 'Hostile Timer', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was released');
+        assert.strictEqual(service.get(job.id)?.state.lastStatus, 'error', 'the failure was recorded');
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'the job is back on the heap');
+        assert.false(service.running, 'the scheduler released its re-entrancy latch');
+        assert.deepEqual(rejections.seen(), [], 'no unhandled rejection escaped');
+      } finally {
+        errorLog.restore();
+        rejections.restore();
+      }
+    });
+
+    test('a non-Error thrown value is described through String()', async function (assert) {
+      // The `String(err)` branch. Distinct from the fallback below: this value
+      // coerces cleanly, so it must be reported verbatim rather than masked.
+      service.onJobDue = () => { throw 'a bare string rejection'; };
+
+      await service.start();
+      const job = await service.add({ name: 'Bare', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.status, 'error', 'the throw was caught');
+      assert.strictEqual(result.error, 'a bare string rejection', 'String() described the non-Error value');
+    });
+
+    test('a thrown value that cannot be coerced falls back to "unknown error"', async function (assert) {
+      // `String(Object.create(null))` raises "Cannot convert object to primitive
+      // value" — the third branch, and the reason describeError exists at all.
+      service.onJobDue = () => { throw Object.create(null); };
+
+      await service.start();
+      const job = await service.add({ name: 'Uncoercible', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.status, 'error', 'the throw was caught');
+      assert.strictEqual(result.error, 'unknown error', 'the uncoercible value fell back rather than throwing');
+    });
+
+    test('a newline in the job name cannot forge a second log record', async function (assert) {
+      // Chronicle writes `${timestamp} ${content}\n` to a newline-delimited
+      // file. `job.name` is unvalidated by `createJob` and `normalize.ts` exists
+      // to accept AI-shaped input, so a name carrying CRLF splits one record
+      // into two, the second wearing a forged `[timestamp] Cron — ` prefix and
+      // indistinguishable from a real success row in logs/error.log.
+      const gate = withGatedLoggingEnabled();
+      const cronLog = sinon.stub(log, 'cron').resolves();
+
+      try {
+        service.onJobDue = () => { throw new Error('boom'); };
+
+        await service.start();
+        const job = await service.add({
+          name: 'Payroll"\r\n[6/15/2026, 12:00:00 PM] Cron — Job "Payroll" (deadbeef) completed OK',
+          schedule: { ...EVERY_HOUR },
+          payload: { ...PAYLOAD },
+        });
+
+        await service.run(job.id, 'force');
+
+        const failureLines = cronLog.args.map(args => args[0] as string).filter(line => line.includes('failed:'));
+        assert.strictEqual(failureLines.length, 1, 'precondition: the gated reporter emitted exactly one failure record');
+        const [line] = failureLines;
+        assert.strictEqual(line.split('\n').length, 1, 'the emitted record is a single line');
+        assert.strictEqual(line.split('\r').length, 1, 'no carriage return survived either');
+        assert.true(line.includes('\\n'), 'the newline is preserved for a reader as the literal two characters');
+        assert.true(line.includes('Payroll'), 'the name is still legible after flattening');
+      } finally {
+        cronLog.restore();
+        gate.restore();
+      }
+    });
+
+    test('a newline in the error message cannot forge a second log record', async function (assert) {
+      // Same sink, the other untrusted value: an error message is arbitrary
+      // consumer-callback text. This one reaches the UNGATED `log.error` on the
+      // timer path, which no config flag can suppress.
+      const errorLog = sinon.stub(log, 'error').resolves();
+
+      try {
+        // Throw from the settle phase so the batch loop's outer reporter runs.
+        service.onJobDue = () => ({ status: 'ok' });
+        service.runLog.record = () => {
+          throw new Error('boom\r\n[6/15/2026, 12:00:00 PM] Cron — Job "Payroll" (deadbeef) completed OK');
+        };
+
+        await service.start();
+        await service.add({ name: 'Injector', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(errorLog.callCount, 1, 'precondition: the ungated per-job reporter was reached');
+        const line = errorLog.firstCall.args[0] as string;
+        assert.strictEqual(line.split('\n').length, 1, 'the emitted record is a single line');
+        assert.strictEqual(line.split('\r').length, 1, 'no carriage return survived either');
+        assert.true(line.includes('\\n'), 'the newline is preserved for a reader as the literal two characters');
+      } finally {
+        errorLog.restore();
+      }
+    });
+
+    test('an oversized job name and error message are truncated before reaching the sink', async function (assert) {
+      // Length cap: one pathological value must not swamp the file. 120 for the
+      // name, 512 for the error, each plus a three-character ellipsis.
+      const gate = withGatedLoggingEnabled();
+      const cronLog = sinon.stub(log, 'cron').resolves();
+
+      try {
+        service.onJobDue = () => { throw new Error('E'.repeat(5_000)); };
+
+        await service.start();
+        const job = await service.add({ name: 'N'.repeat(5_000), schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+        const result = await service.run(job.id, 'force');
+
+        const failureLines = cronLog.args.map(args => args[0] as string).filter(line => line.includes('failed:'));
+        assert.strictEqual(failureLines.length, 1, 'precondition: the gated reporter emitted exactly one failure record');
+        const [line] = failureLines;
+        assert.strictEqual((line.match(/N/g) ?? []).length, 120, 'the name was capped at 120 characters');
+        assert.strictEqual((line.match(/E/g) ?? []).length, 512, 'the error text was capped at 512 characters');
+        assert.strictEqual(result.error?.length, 5_000, 'the RETURNED error is untruncated — the cap is a log concern only');
+      } finally {
+        cronLog.restore();
+        gate.restore();
+      }
+    });
+
+    test('the ungated per-job reporter still fires with config.cron.log === false', async function (assert) {
+      // The reason `onTimer`'s per-job handler routes around `service.log()` and
+      // calls `log.error` directly: `service.log()` early-returns when
+      // `config.cron.log` is false, which is a supported production setting, and
+      // a silently swallowed batch failure is a permanent unschedule that
+      // `status()` reports as healthy. The suite's own config pins that flag
+      // false, so this asserts the design rationale against the real state
+      // rather than a simulated one.
+      const cronLog = sinon.stub(log, 'cron').resolves();
+      const errorLog = sinon.stub(log, 'error').resolves();
+
+      try {
+        assert.false(Boolean(config.cron.log), 'precondition: the gated channel is off, as production may configure it');
+
+        service.onJobDue = () => { throw new Error('gated off, still reported'); };
+
+        await service.start();
+        await service.add({ name: 'Silent', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        // The settle-phase reporter is the gated one; force the batch-loop
+        // reporter by throwing out of settle itself.
+        service.runLog.record = () => { throw new Error('settle exploded'); };
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(cronLog.callCount, 0, 'the gated channel emitted nothing, as configured');
+        assert.strictEqual(errorLog.callCount, 1, 'the ungated reporter still emitted exactly one record');
+        assert.true(
+          (errorLog.firstCall.args[0] as string).includes('execution failed unexpectedly'),
+          'and it is the per-job batch failure record',
+        );
+      } finally {
+        errorLog.restore();
+        cronLog.restore();
+      }
     });
   });
 });
