@@ -978,6 +978,54 @@ module('CronService — phase split (#34)', function (hooks) {
       assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle still re-inserted exactly one heap entry');
     });
 
+    /**
+     * An Error whose `message` is an OBJECT whose `toString` throws.
+     *
+     * Distinct from `errorWithHostileMessage` above, and the docblock on
+     * `describeError` names both: "an `Error` whose `message` is a getter that
+     * throws, OR one that is an object whose `toString` throws". Only the first
+     * was built. `message` is a plain writable property on `Error`, so this
+     * needs no `defineProperty` — a consumer can just assign it.
+     */
+    function errorWithUncoercibleMessage(): Error {
+      const err = new Error('placeholder');
+      (err as unknown as { message: unknown }).message = {
+        toString() { throw new Error('toString exploded'); },
+      };
+
+      return err;
+    }
+
+    test('an Error whose message is an object with a throwing toString still describes', async function (assert) {
+      // Closes a surviving mutant. `describeError`'s `instanceof Error` branch
+      // is `String(err.message)`; weakening it to `err.message as string` left
+      // the suite green at 197/0. The getter variant above does NOT close it —
+      // that one throws on the READ, inside the `try`, so it dies either way.
+      // This value reads back fine and only throws when COERCED, which is the
+      // sub-branch `String(...)` alone covers.
+      //
+      // Under the mutant `ExecuteResult.error` comes back as an OBJECT while
+      // its declared type is `string`, and `#settleJob` hands that same object
+      // to `runLog.record`, so it is persisted per-job. It does not crash —
+      // `forLog`'s `try` absorbs the downstream coercion — so this is a
+      // contract violation the type system cannot see, not a hang.
+      service.onJobDue = () => { throw errorWithUncoercibleMessage(); };
+
+      await service.start();
+      const job = await service.add({ name: 'ObjMsg', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.status, 'error', 'run() resolved with an error result instead of rejecting');
+      assert.strictEqual(
+        typeof result.error, 'string',
+        'ExecuteResult.error is a string, as its declared type promises',
+      );
+      assert.strictEqual(result.error, 'unknown error', 'the uncoercible message fell through to the total fallback');
+      assert.strictEqual(service.get(job.id)?.state.runningAtMs, undefined, 'the claim was still released');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'settle still re-inserted exactly one heap entry');
+    });
+
     test('the timer path survives a thrown Error with a hostile message', async function (assert) {
       // Same value on the other path. The ungated per-job reporter interpolates
       // describeError's output directly, so an uncaught coercion here escapes
@@ -1137,26 +1185,57 @@ module('CronService — phase split (#34)', function (hooks) {
       // `TypeError: value.replace is not a function` instead of returning an
       // `ExecuteResult`. That is the same contract violation `describeError`
       // exists to prevent, one line up on the other interpolated value.
-      service.onJobDue = () => { throw new Error('boom'); };
+      //
+      // The record's CONTENT is asserted below, not just its existence. The two
+      // halves of the fix — `String(value)` and the `try` — are otherwise
+      // interchangeable as far as this suite is concerned: measured, dropping
+      // `String(value)` while keeping the `try` left the whole suite green at
+      // 197/0, because every assertion here was about `run()` not rejecting.
+      // Under that mutant the name renders as `<unrenderable value>`, so a
+      // number, a boolean or a Date loses the job's identity from every failure
+      // record while the suite stays quiet. That is a discarded signal: the
+      // guard converts a perfectly renderable value into a placeholder. The
+      // gate is pinned ON here specifically so the record exists to be read.
+      const gate = withGatedLoggingEnabled();
+      const cronLog = sinon.stub(log, 'cron').resolves();
 
-      await service.start();
-      const job = await service.add({
-        name: 12345 as unknown as string,
-        schedule: { ...EVERY_HOUR },
-        payload: { ...PAYLOAD },
-      });
+      try {
+        service.onJobDue = () => { throw new Error('boom'); };
 
-      assert.strictEqual(
-        typeof job.name, 'number',
-        'precondition: add() stored a non-string name, unvalidated',
-      );
+        await service.start();
+        const job = await service.add({
+          name: 12345 as unknown as string,
+          schedule: { ...EVERY_HOUR },
+          payload: { ...PAYLOAD },
+        });
 
-      const result = await service.run(job.id, 'force');
+        assert.strictEqual(
+          typeof job.name, 'number',
+          'precondition: add() stored a non-string name, unvalidated',
+        );
 
-      assert.strictEqual(result.status, 'error', 'run() RESOLVED with the callback failure rather than rejecting');
-      assert.strictEqual(result.error, 'boom', 'and the error is the callback\'s, not the log helper\'s');
-      assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released');
-      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'exactly one heap entry');
+        const result = await service.run(job.id, 'force');
+
+        assert.strictEqual(result.status, 'error', 'run() RESOLVED with the callback failure rather than rejecting');
+        assert.strictEqual(result.error, 'boom', 'and the error is the callback\'s, not the log helper\'s');
+        assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released');
+        assert.strictEqual(heapEntriesFor(service, job.id), 1, 'exactly one heap entry');
+
+        const records = cronLog.getCalls().map(call => String(call.args[0]));
+
+        assert.strictEqual(records.length, 1, 'reached: exactly one gated failure record was written');
+        assert.true(
+          records[0].includes('"12345"'),
+          'the numeric name reached the log as its digits — coerced, not replaced by the catch fallback',
+        );
+        assert.false(
+          records[0].includes('<unrenderable value>'),
+          'and the total-failure placeholder was NOT used for a value that renders fine',
+        );
+      } finally {
+        cronLog.restore();
+        gate.restore();
+      }
     });
 
     test('a job name whose toString throws still produces a failure record on the timer path', async function (assert) {
