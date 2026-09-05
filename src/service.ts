@@ -72,6 +72,13 @@ function forLog(value: string, maxLength: number): string {
  * reject instead of returning an `ExecuteResult`: a contract violation in the
  * function written to prevent exactly that. Reading and coercing `message`
  * inside the `try` is what closes it.
+ *
+ * `Cron` in `main.ts` carries its own `describeError` and the two deliberately
+ * differ: it renders for a log line only, so it prefers `err.stack`; this one
+ * is also returned to the caller as `ExecuteResult.error` and persisted in a
+ * per-job run log, where a stack would be an unbounded blob in every stored
+ * failure. Recorded in `docs/architecture.md` under Error Handling — do not
+ * merge them into a shared helper without reading that first.
  */
 function describeError(err: unknown): string {
   try {

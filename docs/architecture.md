@@ -158,6 +158,50 @@ Two things to know before reaching for it:
 
 Whichever is chosen, guard it: `test/unit/publish-surface-test.ts` asserts against the emitted `dist/service.d.ts` that `#private;` is present and that the three names are absent, because this repo has already been burned once by a published-surface property regressing silently (#30).
 
+#### Two `describeError` helpers, deliberately not shared (#34 / #36)
+
+`src/main.ts` and `src/service.ts` each carry a private `describeError`. That is
+a **recorded decision**, not drift, and neither should be lifted into a shared
+module: they render for different destinations.
+
+| | `Cron.describeError` (`main.ts`) | `CronService.describeError` (`service.ts`) |
+| :-- | :-- | :-- |
+| returns | `err.stack ?? \`${err.name}: ${err.message}\`` | `String(err.message)` |
+| only destination | a log line | `ExecuteResult.error` **and** a run-log row **and** a log line |
+| non-`Error` fallback | `String(err)` | `String(err)` |
+| un-renderable fallback | `'<thrown value could not be rendered>'` | `'unknown error'` |
+
+The divergence follows from the destination. `Cron` is fire-and-forget and
+returns `void`, so the log is the *only* channel a failure can ever reach and a
+full stack is the right payload. `CronService` returns the string to the caller
+as `ExecuteResult.error` and persists it in a bounded per-job run log, so a
+stack would put an unbounded multi-kilobyte blob into every stored failure and
+into a value consumers compare and display. The log line is a third consumer,
+not the primary one, and it gets the same string through `forLog`.
+
+Both must be **total** — every read of a consumer-supplied thrown value can
+throw (`instanceof` runs a proxy trap, `message`/`stack`/`name` can be throwing
+accessors, `String(Object.create(null))` throws outright), and both run inside
+the catch whose whole job is to stop a callback failure from reaching the
+scheduler. In `CronService` the `message` read must be *inside* the `try`:
+`Error.prototype.message` is typed `string`, so TypeScript cannot see a throwing
+getter and the coercion would otherwise be deferred to the caller's template
+literal, outside every guard — which made `run()` reject instead of returning an
+`ExecuteResult`.
+
+Anything interpolated into a log line is newline-flattened and length-capped
+first (`forLog` in `service.ts`); chronicle writes `${timestamp} ${content}\n`
+to a newline-delimited file, so an unflattened value forges a complete, well-
+formed record. Job names and error text are both consumer- or model-controlled.
+
+**Internal-helper visibility likewise differs by class and is intentional.**
+`CronService` uses `#private` for its claim/settle pair because those carry a
+lock-held precondition the type system cannot express (see above). `Cron`'s
+`invokeJob`/`report`/`release` are public: they have no such precondition, and
+`Cron`'s members are exposed structurally through `jobs`, `heap` and
+`setNextTrigger`, so hard-privating them would be a breaking type change for no
+safety gain.
+
 ### Logging Patterns
 **Always check config before logging:**
 ```javascript
