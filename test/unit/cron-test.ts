@@ -479,6 +479,80 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     assert.strictEqual(unhandled.length, 0, 'the escaping throw did not become an unhandled rejection');
   });
 
+  /*
+   * Phase 3 HIGH-1 residue. Items 1-3 of that finding (thenable probe inside the
+   * `try`, `finally` in the drain loop, terminal `.catch` on the timer callback)
+   * landed in `be52ad6`. Its fourth measured symptom — "`register` breaks too:
+   * `register()` threw to the consumer, `timer armed: false`" — did not: the
+   * drain loop's `finally` has no counterpart at the `register` call site, and
+   * `invokeJob` is not actually total, because the reporting path itself reads
+   * consumer-controlled values (`err.stack`, `String(err)`) that can throw. The
+   * drain loop survives such a throw but does not finish draining, so the cost
+   * lands on whichever jobs were due behind the throwing one.
+   */
+
+  test('an error whose `stack` getter throws is reported without wedging register', function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+    const err = new Error('boom');
+
+    // Not a proxy and not contrived: any code that redefines `stack` (error
+    // serializers, some instrumentation shims) can produce this. `describeError`
+    // reads `err.stack` first, so the throw happens inside the reporting path
+    // that exists to keep a callback failure from reaching the scheduler.
+    Object.defineProperty(err, 'stack', { get(): never { throw new Error('stack getter exploded'); } });
+
+    cron.register('poisoned', () => { throw err; }, '1', true);
+
+    assert.ok(
+      errorSpy.calledWithMatch(sinon.match(/Cron job "poisoned" failed on init/)),
+      'the callback failure was still reported',
+    );
+    assert.notStrictEqual(cron.timer, null, 'register() reached scheduleNextRun() — the job is actually scheduled');
+    assert.strictEqual(cron.jobs['poisoned']?.runningAtMs, undefined, 'the in-flight guard was released');
+  });
+
+  test('a thrown value with no string conversion does not abort the drain loop', async function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+    const probe = sinon.spy();
+
+    // `String(Object.create(null))` throws `TypeError: Cannot convert object to
+    // primitive value` — plain JS, no proxy. Escaping `invokeJob` aborts the
+    // `while` loop, so a co-registered job due on the SAME tick is never
+    // invoked: one callback's failure costs another job its execution, which is
+    // the cross-job blast radius #36 exists to remove. `scheduleNextRun()` still
+    // runs (the drain loop's `finally`), so the scheduler reads healthy while
+    // the co-registered job silently loses runs.
+    //
+    // Registration order matters: `nostring` must be drained first, so it is
+    // registered first and both share the same interval.
+    cron.register('nostring', () => { throw Object.create(null) as never; }, '1');
+    cron.register('probe', probe, '1');
+
+    await clock.tickAsync(3000);
+
+    assert.ok(
+      errorSpy.calledWithMatch(sinon.match(/Cron job "nostring" failed/)),
+      'the unconvertible thrown value was reported as a job failure, not as a scheduler failure',
+    );
+    assert.strictEqual(probe.callCount, 3, `co-registered job fired on every due tick (fired ${probe.callCount}x)`);
+  });
+
+  test('register re-arms the scheduler even if invokeJob itself throws', function (assert) {
+    // Structural backstop, mirroring the drain-loop test above. `invokeJob` is
+    // total once `describeError` is, so this guard is otherwise unreachable —
+    // which is exactly why it needs direct coverage rather than trusting that
+    // nothing inside `invokeJob` will ever throw again.
+    const stub = sinon.stub(cron, 'invokeJob').throws(new Error('invokeJob exploded'));
+
+    assert.throws(
+      () => cron.register('probe', () => {}, '1', true),
+      /invokeJob exploded/,
+      'the escaping throw is surfaced to the caller rather than swallowed',
+    );
+    assert.ok(stub.called, 'precondition: the throwing invokeJob was actually reached');
+    assert.notStrictEqual(cron.timer, null, 'scheduleNextRun() still ran despite the throw');
+  });
+
   test('a newline in a job key cannot forge a log line', async function (assert) {
     const warnSpy = sinon.stub(log, 'warn');
     const key = 'a:\n[FORGED] Cron::admin - all jobs healthy';
