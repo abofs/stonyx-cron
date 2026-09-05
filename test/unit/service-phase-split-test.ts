@@ -106,10 +106,18 @@ function captureUnhandledRejections(): { seen: () => unknown[]; restore: () => v
 /**
  * Pin the config-gated log channel on or off for the duration of one test.
  *
- * `test/config/environment.js` pins `cron.log: false` and it IS applied —
- * stonyx's config loader imports the `${basePath}.js` specifier directly, which
- * is why that file is `.js` and must stay `.js` (#30, guarded by
- * `test/unit/publish-surface-test.ts`). So `service.log()` is a no-op for the
+ * `test/config/environment.js` pins `cron.log: false` and it IS applied. The
+ * declared `stonyx@0.2.3-beta.93` resolves config through an
+ * `existsSync(`${basePath}.js`)` check before the dynamic import (verified in
+ * that version's published tarball), so a `.ts` here would never be looked for
+ * and the override would vanish. That is why the file must stay `.js`.
+ *
+ * NOTHING IN THIS SUITE GUARDS THAT. Measured at this head: renaming it to
+ * `.ts` leaves all 197 tests green. An earlier version of this comment cited
+ * `test/unit/publish-surface-test.ts` as the guard — it is not one. That test
+ * asserts on the packaged root `config/environment.js` (#30), which is a
+ * different file, in a different directory, and `test/` is not in `files` at
+ * all. The rename risk is tracked on #62. So `service.log()` is a no-op for the
  * whole suite by default.
  *
  * Both directions are pinned explicitly, including the one that agrees with the
