@@ -152,7 +152,7 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
 
     // Captured, not assumed. Restoring to a hardcoded literal in `afterEach`
     // silently corrupts the shared config singleton for every later module the
-    // day `test/config/environment.ts` changes its pin.
+    // day `test/config/environment.js` changes its pin.
     previousCronLog = config.cron.log;
 
     unhandled = [];
