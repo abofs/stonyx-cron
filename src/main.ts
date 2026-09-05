@@ -32,12 +32,28 @@ const MAX_LOGGED_ERROR_LENGTH = 512;
  * become the literal two characters so the content survives for a reader, and
  * the length cap keeps one pathological value from swamping the file.
  *
- * Kept byte-identical to the `forLog` landing in `src/service.ts` on #34: the
- * two tiers render the same untrusted values into the same log file, and a
- * reader diagnosing a forged record should not have to know which tier wrote
- * it. Duplicated rather than shared because the two land on separate branches;
- * folding them into one helper is a follow-up once both are on `dev`, not a
- * cross-PR dependency that would make either unmergeable alone.
+ * DIVERGED from the `forLog` in `src/service.ts`, deliberately — this copy is
+ * NOT byte-identical to it and must not be folded into it by assuming it is.
+ * (An earlier version of this docblock claimed byte-identity; #34's `fac09cb`
+ * falsified that, and the two bodies now measure unequal.) `service.ts`'s is
+ * TOTAL: it wraps the coercion in `String(value)` and a `try`, returning
+ * `'<unrenderable value>'` rather than throwing. This one is not.
+ *
+ * The divergence is correct on the merits, and the reason is the call site, not
+ * the helper. Both of this copy's callers are the two `forLog(...)` calls in
+ * `describeError` directly below (`:82`, `:85`), and both are INSIDE that
+ * function's own `try`, so a `TypeError` from `value.replace` on a
+ * non-string degrades to `'<thrown value could not be rendered>'` and the log
+ * record is still produced. `service.ts`'s callers are not so contained: `:700`
+ * sits in a bare `catch` with nothing above it, and `:579`'s enclosing `catch`
+ * has nothing left to report to — so a throw there destroyed the failure
+ * record outright (measured: 0 records for a job that failed). That is why
+ * totality was a live defect there and is not one here.
+ *
+ * Duplicated rather than shared because the two landed on separate branches.
+ * The fold is still wanted, but whoever performs it MUST adopt `service.ts`'s
+ * total version as the survivor: folding to this one would silently revert
+ * `fac09cb`. See #66, which carries the consolidation.
  */
 function forLog(value: string, maxLength: number): string {
   const flattened = value.replace(/\r\n|[\r\n\u2028\u2029]/g, '\\n');

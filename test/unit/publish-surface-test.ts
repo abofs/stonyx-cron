@@ -10,6 +10,7 @@
 // `config/environment.ts`.
 import QUnit from 'qunit';
 import { execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
 
 const { module, test } = QUnit;
 
@@ -30,6 +31,64 @@ module('[Unit] Publish surface', function () {
     assert.notOk(
       files.includes('config/environment.ts'),
       'published tarball does NOT include config/environment.ts'
+    );
+  });
+
+  // Regression test for stonyx-cron#34.
+  //
+  // #34 made two published-surface claims that had been verified by hand and
+  // recorded only in a PR body: that `CronService` emits `#private;` (so the
+  // class is nominally typed and a consumer's structural double stops
+  // compiling), and that `claimJob` / `settleJob` / `executeClaimed` do NOT
+  // appear in the emitted declarations. This file exists because a
+  // published-surface property regressed once before (#30) and prose did not
+  // catch it; the same guard applies here. A later refactor that publishes one
+  // of those three, or that flips the class back to structural typing, is a
+  // breaking change for consumers and must not land silently.
+  //
+  // Asserted against the EMITTED `dist/service.d.ts`, never against `src/`.
+  test('dist/service.d.ts keeps CronService nominal and its claim helpers private', function (assert) {
+    const declarations = readFileSync('dist/service.d.ts', 'utf8');
+
+    assert.ok(
+      /^\s*#private;\s*$/m.test(declarations),
+      'CronService emits `#private;` — the class stays nominally typed'
+    );
+
+    // Scoped to declarations, not the whole file: each name is legitimately
+    // mentioned inside JSDoc prose, and a substring match would pass on that.
+    // The anchor is `^\s*`, and every JSDoc line here begins with `*`, so prose
+    // cannot reach the name position.
+    //
+    // `;` is in the terminator class and is the load-bearing member of it.
+    // `tsc` does NOT emit a signature for a TypeScript-`private` member — it
+    // emits the bare name, `private claimJob;`. Without `;` the `(private\s+)?`
+    // alternative is dead: it cannot match anything the compiler produces.
+    // Measured — flipping ONLY `#claimJob` to `private claimJob` puts
+    // `private claimJob;` into `dist/service.d.ts` with this test green, because
+    // the `#private;` assertion above only fires when ALL THREE members flip.
+    // A one-member flip is the likeliest form of this regression (it is what a
+    // drive-by "make it testable" edit looks like), and `docs/architecture.md`
+    // cites this test as what makes the `#`-vs-`private` house rule
+    // enforceable, so it has to catch that case.
+    for (const name of ['claimJob', 'settleJob', 'executeClaimed']) {
+      assert.notOk(
+        new RegExp(`^\\s*(private\\s+)?${name}\\s*[(<:;]`, 'm').test(declarations),
+        `${name} is not declared in the published surface`
+      );
+    }
+
+    // The narrowed `reason` union is only usable if a consumer can name it.
+    for (const type of ['SkipReason', 'ExecuteResult', 'JobDueResult', 'ServiceStatus', 'ListOptions', 'OnJobDueCallback']) {
+      assert.ok(
+        new RegExp(`^export (type|interface) ${type}\\b`, 'm').test(declarations),
+        `${type} is exported from the published surface`
+      );
+    }
+
+    assert.ok(
+      declarations.includes("reason?: SkipReason"),
+      'ExecuteResult.reason is the narrowed union, not string'
     );
   });
 });
