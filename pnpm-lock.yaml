@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       stonyx:
-        specifier: 0.2.3-beta.93
-        version: 0.2.3-beta.93
+        specifier: 0.2.3-beta.94
+        version: 0.2.3-beta.94
     devDependencies:
       '@stonyx/utils':
         specifier: 0.2.3-beta.27
@@ -207,9 +207,6 @@ packages:
   '@stonyx/logs@1.0.1-beta.21':
     resolution: {integrity: sha512-4kqn4hGTRPbkNMVp8HRT7rQOW14z5PUYbTzQVPUqT/4tNnWmXbQU+Ko4NsTriWrJ9ylvyU5pt++VeE6mAKlGaw==}
 
-  '@stonyx/utils@0.2.3-beta.26':
-    resolution: {integrity: sha512-slCeMIpKqlGbWtb5fKwJqMoa6KuacIBV5RsXPX2CtAUXUkMv4CY5flOoUjBap9BLGimrF1xGmmG+f/Pisfb/hg==}
-
   '@stonyx/utils@0.2.3-beta.27':
     resolution: {integrity: sha512-sqM4OE6P5hOgG1FMgMa/Ji0EZ1u4xvoMn8CvFqlDrG56lePsLs1s0Y8x6G+sutjZutQRcrcY0GgMbdoI7kpbHA==}
 
@@ -275,8 +272,8 @@ packages:
   sinon@21.0.3:
     resolution: {integrity: sha512-0x8TQFr8EjADhSME01u1ZK31yv2+bd6Z5NrBCHVM+n4qL1wFqbxftmeyi3bwlr49FbbzRfrqSFOpyHCOh/YmYA==}
 
-  stonyx@0.2.3-beta.93:
-    resolution: {integrity: sha512-2lcsuO1A+CHC3SpN+K0wDn/CcF/8Rlc+5eqVjYeLdb21zm9/eHrgjhLIVXcvsMagrCR9PoSCulJRm2WcM/VXbw==}
+  stonyx@0.2.3-beta.94:
+    resolution: {integrity: sha512-AbSU1ZpuTo/aNfJmKe4KP0yx1EBvroTQAuPgIcgpcGhb4KmfE+e9nYO/PmZWf3nrXI881eUhi9yfNT833+tn/A==}
     hasBin: true
 
   supports-color@7.2.0:
@@ -404,8 +401,6 @@ snapshots:
     dependencies:
       chalk: 5.6.2
 
-  '@stonyx/utils@0.2.3-beta.26': {}
-
   '@stonyx/utils@0.2.3-beta.27': {}
 
   '@types/node@25.5.2':
@@ -486,10 +481,10 @@ snapshots:
       diff: 8.0.4
       supports-color: 7.2.0
 
-  stonyx@0.2.3-beta.93:
+  stonyx@0.2.3-beta.94:
     dependencies:
       '@stonyx/logs': 1.0.1-beta.21
-      '@stonyx/utils': 0.2.3-beta.26
+      '@stonyx/utils': 0.2.3-beta.27
 
   supports-color@7.2.0:
     dependencies:
