@@ -7,6 +7,6 @@
 - [Architecture](architecture.md) -- Core components deep dive: Cron and MinHeap classes, dependencies, code patterns, and configuration
 - [Extension Guide](extension-guide.md) -- Guidance for common feature additions and extension points
 - [Project Structure](project-structure.md) -- Source layout and component overview
-- [Improvements](improvements.md) -- Tracked improvement opportunities
+- [Improvements](improvements.md) -- Improvement opportunities; entries are struck through and marked RESOLVED once superseded, so read the headings before acting on one
 - [Release](release.md) -- Release process
 - [Deprecation Remediation](deprecation-remediation.md) -- Corrective deprecation text for the published versions that shipped `.git/config`

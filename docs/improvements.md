@@ -2,13 +2,13 @@
 
 ## `register()` does not validate duplicate keys
 
-**File:** `src/main.js`, `register()` method (line 67)
+**File:** `src/main.ts`, `register()` method
 
 When `register()` is called with a key that already exists, it overwrites the entry in `this.jobs[key]` but never removes the old job object from the heap. The old entry remains orphaned in the heap and will still trigger when its `nextTrigger` time arrives, even though it is no longer tracked in `this.jobs`.
 
 ```javascript
-register(key, callback, interval, runOnInit=false) {
-  const job = { callback, interval, key };
+register(key, callback, interval, runOnInit = false) {
+  const job = { callback, interval, key, nextTrigger: 0 };
   this.jobs[key] = job;       // overwrites old reference
   this.setNextTrigger(job);
   this.heap.push(job);        // pushes new entry, old entry still in heap
@@ -22,32 +22,18 @@ register(key, callback, interval, runOnInit=false) {
 
 ---
 
-## `runOnInit` callback is not awaited
+## ~~`runOnInit` callback is not awaited~~ — RESOLVED (#36)
 
-**File:** `src/main.js`, `register()` method (line 79)
+Both halves of this entry are fixed. `register(runOnInit)` and `runDueJobs` now
+route through a single `invokeJob` helper that catches synchronous throws and
+asynchronous rejections identically.
 
-When `runOnInit` is `true`, the callback is invoked synchronously without `await`:
+The suggested fix recorded here — *"add `await` to the `callback()` call and make
+`register()` async"* — was **rejected**, and is the exact opposite of the shape
+that shipped. `register()` must stay synchronous and `void` for its consumer
+(`stonyx-orm/src/db.ts`), and `runDueJobs` must **not** await the callback:
+awaiting is what let one hung job starve the whole scheduler. See
+`docs/architecture.md` § Error Handling for the shape that replaced it.
 
-```javascript
-if (runOnInit) {
-  try {
-    callback();          // not awaited
-  } catch (err) {
-    log.error(`Cron job "${key}" failed on init:`, err);
-  }
-}
-```
-
-This is inconsistent with `runDueJobs()`, which does await the callback:
-
-```javascript
-try {
-  await job.callback();  // awaited
-} catch (err) {
-  log.error(`Cron job "${job.key}" failed:`, err);
-}
-```
-
-**Impact:** If the callback is async and throws, the rejection will not be caught by the `try/catch` block in `register()`. The error becomes an unhandled promise rejection instead of being logged.
-
-**Suggested fix:** Add `await` to the `callback()` call in the `runOnInit` branch and make `register()` async, or wrap in a `.catch()` handler.
+The contrast this section drew with `runDueJobs()` ("which does await the
+callback") no longer describes any code in this repo.

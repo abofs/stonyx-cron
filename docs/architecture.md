@@ -14,12 +14,38 @@ timer = null;       // setTimeout handle for next scheduled run
 **Job Object Schema:**
 ```javascript
 {
-  key: string,           // Unique identifier for the job
-  callback: Function,    // Async function to execute
-  interval: number,      // Interval in seconds
-  nextTrigger: number    // Unix timestamp in seconds when job should run
+  key: string,            // Unique identifier for the job
+  callback: Function,     // Function to execute; may be sync or async
+  interval: string,       // Interval in whole seconds, as a string
+  nextTrigger: number,    // Unix timestamp in seconds when job should run
+  runningAtMs: number,    // ms timestamp of the in-flight invocation; undefined when idle
+  skipReported: boolean   // whether a still-running skip has been reported for this run
 }
 ```
+
+`runningAtMs` and `skipReported` are **optional** on the emitted type. `CronJob`
+is not exported by name but is structurally reachable through `jobs`, `heap` and
+`setNextTrigger`, so making either one required is a breaking change for any
+consumer that builds a job object in TypeScript. Keep new job state optional.
+
+`runningAtMs` is the in-flight guard, and it lives **on the job object** rather
+than in a scheduler-level set keyed by job key. That is deliberate: object
+identity is invocation identity, so the settle handler of one invocation can only
+ever release the guard it set, and a job removed by `unregister` takes its guard
+with it. It mirrors `job.state.runningAtMs` in the service tier (`markRunning` /
+`applyResult` / `isDue` in `src/job.ts`). Note that `CronService.running` is a
+*class-level* re-entrancy flag on the timer and a different concept entirely.
+
+**Accepted residual — concurrency across unregister/re-register.** Because a
+replacement job object carries a fresh guard, unregistering a key whose
+invocation is still pending and re-registering it lets the replacement run
+alongside the abandoned invocation (measured: 2 concurrent). The same-job
+guarantee therefore holds for the lifetime of a **registration**, not of a key.
+It is accepted because bounding it would reintroduce the defect this class was
+fixed for: serialising a replacement against an invocation the consumer has
+explicitly abandoned is exactly what produces a permanently dead job. It is also
+the only recovery path from a stuck job. Bounding the callback remains the
+consumer's responsibility.
 
 **Public Methods:**
 
@@ -29,6 +55,9 @@ timer = null;       // setTimeout handle for next scheduled run
 - `callback` (Function): Async function to execute on each trigger
 - `interval` (number): Time in seconds between executions
 - `runOnInit` (boolean): Whether to run callback immediately
+- The `runOnInit` invocation goes through `invokeJob` — the same single call
+  site the drain loop uses — and `scheduleNextRun()` is called from a `finally`,
+  so a job is never left registered-but-unscheduled
 
 **`unregister(key)`**
 - Removes a job from the scheduler
@@ -43,9 +72,21 @@ timer = null;       // setTimeout handle for next scheduled run
 
 **`runDueJobs()`**
 - Processes all jobs with `nextTrigger <= now`
-- Executes job callbacks with error handling
-- Reschedules each job after execution
-- Calls `scheduleNextRun()` when done
+- Reschedules each job **before** invoking it, then invokes through `invokeJob`
+- Never awaits the callback — see "Error Handling" below
+- Skips a job whose previous invocation has not settled, and reports that skip
+  once per stuck run on an **ungated** channel
+- Calls `scheduleNextRun()` from a `finally`, so the scheduler re-arms on every
+  exit from the drain loop
+
+**`invokeJob(job, runOnInit=false)`**
+- The one place this class invokes a consumer callback
+- Catches synchronous throws and asynchronous rejections identically
+- Acquires and releases the job's `runningAtMs` in-flight guard
+
+**`report(level, message)`** / **`release(job)`**
+- Helpers of `invokeJob`: log without letting the logger's own failure escape as
+  an unhandled rejection, and clear a job's in-flight guard
 
 **`setNextTrigger(job)`**
 - Updates job's `nextTrigger` to `now + interval`
@@ -122,9 +163,16 @@ This affects:
 - Delay calculation in `scheduleNextRun()`: must multiply by 1000 for `setTimeout`
 
 ```javascript
-// CORRECT: Convert seconds to milliseconds for setTimeout
+// CORRECT: Convert seconds to milliseconds for setTimeout.
+// Note the terminal `.catch`: `runDueJobs` is async, so anything that escapes
+// it would otherwise surface as an unhandled rejection raised from a bare
+// timer callback. See Rule 3 under Error Handling below.
 const delay = Math.max(0, nextJob.nextTrigger - getTimestamp()) * 1000;
-this.timer = setTimeout(() => this.runDueJobs(), delay);
+this.timer = setTimeout(() => {
+  this.runDueJobs().catch(err => {
+    this.report('error', `Cron scheduler tick failed: ${describeError(err)}`);
+  });
+}, delay);
 ```
 
 ---
@@ -153,21 +201,80 @@ if (config.cron?.log) log.cron(`${tag} - ${text}:`);
 ```
 
 **Use appropriate log methods:**
-- `log.cron()` for informational cron messages
-- `log.error()` for error conditions
+- `log.cron()` for informational cron messages (gated by `config.cron.log`)
+- `log.error()` / `log.warn()` via `report()` for error and wedged-job conditions
+  — **ungated**, because these are the module's only signal that work was dropped
+
+The `if (config.debug)` wrapper applies to informational chatter only. Do not put
+a dropped execution behind it, or behind `config.cron.log`.
 
 ### Error Handling
-**Never let errors crash the scheduler:**
+**Never let errors crash the scheduler — and never `await` a consumer callback:**
+
 ```javascript
-try {
-  await job.callback();
-} catch (err) {
-  log.error(`Cron job "${job.key}" failed:`, err);
-}
-// Always reschedule job, even after error
+// Reschedule FIRST, then invoke without awaiting. `runDueJobs` returns void and
+// nothing here consumes the callback's result, so awaiting bought nothing and
+// cost the scheduler: a callback that never settled left the job absent from the
+// heap, starved every other job, and stopped the timer from re-arming.
 this.setNextTrigger(job);
 heap.push(job);
+
+this.invokeJob(job);
 ```
+
+All callback invocation goes through `invokeJob`. Do **not** add a second call
+site — the in-flight guard, the catch and the error reporting all live there:
+
+```javascript
+try {
+  const result = job.callback();
+
+  if (result && typeof result.then === 'function') {
+    Promise.resolve(result)
+      // Braces: returning the report would put its promise back into the chain,
+      // and `.finally` passes a rejection straight through.
+      .catch(err => { this.report('error', `... ${describeError(err)}`); })
+      .finally(() => { this.release(job); })
+      .catch(() => {});          // a throwing handler must not escape either
+    return;
+  }
+
+  this.release(job);
+} catch (err) {
+  this.release(job);
+  this.report('error', `... ${describeError(err)}`);
+}
+```
+
+Five rules that fall out of this and are easy to break:
+
+1. **Interpolate the error into the message.** `@stonyx/logs` reads a second
+   argument as `logToFile`, not as a format argument, so `log.error(msg, err)`
+   discards the error *and* forces a disk write on every failure. `src/types/stonyx.d.ts`
+   carries the real signature so this fails to compile rather than failing silently.
+2. **Everything that touches the callback stays inside the `try`** — including
+   the `typeof result.then` probe. A callback may return an object whose `then`
+   is a throwing getter; reading it outside the guard aborts the drain loop
+   before `scheduleNextRun()`, which is the original defect again.
+3. **`scheduleNextRun()` runs in a `finally`** at *both* call sites that invoke
+   a callback — `runDueJobs` and `register` — and the timer callback in
+   `scheduleNextRun` carries a terminal `.catch`. The invariant is that the
+   scheduler always re-arms, even if the loop body throws. `register` is the
+   easier one to forget: it has no outer loop, so an escape there leaves the job
+   in `jobs` and in the heap with no timer behind it.
+4. **`describeError` must be total.** It runs *inside* the catch whose purpose
+   is to keep a callback failure away from the scheduler, and every read it
+   performs is on a consumer-controlled value: `instanceof` runs a proxy's
+   `getPrototypeOf` trap, `stack`/`name`/`message` can be accessors, and
+   `String(Object.create(null))` throws outright. A throw from the reporting
+   path escapes the guard it is inside and is the original defect again, so the
+   whole body sits in a `try` with a non-re-entrant fallback string.
+5. **Report a wedged job on an ungated channel, once per stuck run.** `this.log`
+   returns early on `!config.cron?.log`, and a lost execution reported through a
+   channel a config flag can silence is indistinguishable from a healthy
+   scheduler. `report('warn', ...)` is ungated; `skipReported` bounds it to one
+   line per stuck run (it was 43,200 lines/day per hung job at a 1s interval,
+   which pushes an operator to turn the signal off).
 
 ### Time Handling
 **Always use `getTimestamp()` for current time:**
@@ -197,7 +304,11 @@ export default {
 ```
 
 **Environment Variable:**
-- `CRON_LOG`: Set to `false` to disable cron logging
+- `CRON_LOG`: Set to `false` to disable cron logging. **Currently inert** —
+  `config/environment.js` destructures `CRON_LOG` from `process`, not
+  `process.env`, so the value is always `undefined` and `log` defaults to `true`.
+  Tracked in abofs/stonyx-cron#56. This is one reason the wedged-job signal does
+  not route through `config.cron.log`.
 
 ### Using Configuration in Code
 ```javascript
