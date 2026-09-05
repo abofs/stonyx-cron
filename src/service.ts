@@ -54,13 +54,13 @@ const MAX_LOGGED_NAME_LENGTH = 120;
  * that is a compile-time claim about runtime data: `normalize.ts` only
  * GENERATES a name when the field is falsy, so `add({ name: 12345 })` stores a
  * number through the public API, and `start(initialJobs)` takes names verbatim
- * from the consumer's store \u2014 the same untrusted boundary `start()` already
+ * from the consumer's store — the same untrusted boundary `start()` already
  * hardens `state` against.
  *
  * Fixed HERE rather than by coercing in `normalize`, deliberately. Coercing at
  * `normalize` closes the `add()` path only; the rehydration path bypasses both
  * `normalize` and `createJob` entirely, and that is the path this class already
- * treats as hostile. And this helper is on the ERROR path \u2014 a helper that
+ * treats as hostile. And this helper is on the ERROR path — a helper that
  * throws while building an error report destroys the report it exists to
  * produce. Measured pre-fix: `run()` rejected with `TypeError: value.replace is
  * not a function` instead of returning an `ExecuteResult`, and on the timer
