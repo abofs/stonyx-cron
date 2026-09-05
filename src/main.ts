@@ -19,6 +19,32 @@ import log from 'stonyx/log';
 import { getTimestamp } from '@stonyx/utils/date';
 import MinHeap, { type HeapItem } from './min-heap.js';
 
+/** Longest error text that may reach a log line. Anything past this is truncated. */
+const MAX_LOGGED_ERROR_LENGTH = 512;
+
+/**
+ * Flatten a value for interpolation into a single log line.
+ *
+ * `@stonyx/logs` writes `${timestamp} ${content}\n` to a newline-delimited
+ * file, so any `\r` or `\n` inside `content` ends the record early and
+ * everything after it is read back as a separate entry — including a forged
+ * `[timestamp] ...` prefix that is indistinguishable from a real one. Newlines
+ * become the literal two characters so the content survives for a reader, and
+ * the length cap keeps one pathological value from swamping the file.
+ *
+ * Kept byte-identical to the `forLog` landing in `src/service.ts` on #34: the
+ * two tiers render the same untrusted values into the same log file, and a
+ * reader diagnosing a forged record should not have to know which tier wrote
+ * it. Duplicated rather than shared because the two land on separate branches;
+ * folding them into one helper is a follow-up once both are on `dev`, not a
+ * cross-PR dependency that would make either unmergeable alone.
+ */
+function forLog(value: string, maxLength: number): string {
+  const flattened = value.replace(/\r\n|[\r\n\u2028\u2029]/g, '\\n');
+
+  return flattened.length > maxLength ? `${flattened.slice(0, maxLength)}...` : flattened;
+}
+
 /**
  * Render an unknown thrown value as log text. Total by construction.
  *
@@ -36,9 +62,11 @@ import MinHeap, { type HeapItem } from './min-heap.js';
  */
 function describeError(err: unknown): string {
   try {
-    if (err instanceof Error) return err.stack ?? `${err.name}: ${err.message}`;
+    if (err instanceof Error) {
+      return forLog(err.stack ?? `${err.name}: ${err.message}`, MAX_LOGGED_ERROR_LENGTH);
+    }
 
-    return String(err);
+    return forLog(String(err), MAX_LOGGED_ERROR_LENGTH);
   } catch {
     // Deliberately not re-entrant: describing the failure to describe the error
     // would be the same read that just threw.
