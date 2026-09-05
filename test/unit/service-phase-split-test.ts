@@ -542,6 +542,81 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(0);
       assert.true(invoked >= 2, 'the timer path fires the rehydrated job too');
     });
+
+    test('a deep-frozen store row is refused loudly by start(), not accepted and then fatal', async function (assert) {
+      // `structuredClone` + `Object.freeze` is an ordinary defensive
+      // rehydration, and a frozen row is a type-valid `Job`. It is nonetheless
+      // unusable by this class: every execution writes `job.state.runningAtMs`
+      // via `markRunning`, so the write in `start()` is not what makes the row
+      // fail — it is what makes it fail EARLY, at the store boundary, where the
+      // consumer's own `await start(...)` can catch it.
+      //
+      // The tempting narrowing — only clear the field when it is set — was
+      // measured and is worse: it lets a frozen row into the heap, and the
+      // TypeError then comes out of `onTimer`'s batch claim instead. That runs
+      // from a bare timer callback, so it surfaces as an unhandled rejection and
+      // is process-fatal under Node's default. This test is what stops that
+      // narrowing from being reintroduced as a "fix".
+      const seed = new CronService();
+      await seed.start();
+      const original = await seed.add({ name: 'Frozen Row', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      seed.stop();
+
+      const row: Job = structuredClone(original);
+      Object.freeze(row.state);
+
+      assert.strictEqual(row.state.runningAtMs, undefined, 'precondition: the row is idle');
+      assert.true(Object.isFrozen(row.state), 'precondition: the row state is frozen');
+
+      let invoked = 0;
+      service.onJobDue = () => { invoked++; return { status: 'ok' }; };
+
+      const started = probe(service.start([row]));
+      await clock.tickAsync(0);
+
+      assert.true(started.settled(), 'start() settled rather than hanging');
+      assert.ok(started.error(), 'start() rejected at the store boundary, where the caller can catch it');
+      assert.strictEqual(heapEntriesFor(service, row.id), 0, 'the unusable row never reached the heap');
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+      assert.strictEqual(invoked, 0, 'and therefore never reached the timer path, where the same throw would be fatal');
+    });
+
+    test('start() arms the timer even when a later store row throws', async function (assert) {
+      // `initialJobs` crosses a serialization boundary, so `Job[]` is a
+      // compile-time claim about runtime data. A row missing `state` throws
+      // mid-loop; without the `finally`, `start()` leaves `started: true` — so
+      // it is a no-op from then on — with the earlier rows sitting in the heap
+      // and no timer. Same terminal state #53 guards `register` against, and
+      // `status()` reports it as healthy.
+      const seed = new CronService();
+      await seed.start();
+      const good = await seed.add({ name: 'Good Row', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const other = await seed.add({ name: 'Malformed Row', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      seed.stop();
+
+      const goodRow: Job = structuredClone(good);
+      const badRow = structuredClone(other) as unknown as Record<string, unknown>;
+      delete badRow.state;
+
+      let invoked = 0;
+      service.onJobDue = () => { invoked++; return { status: 'ok' }; };
+
+      const started = probe(service.start([goodRow, badRow as unknown as Job]));
+      await clock.tickAsync(0);
+
+      assert.true(started.settled(), 'precondition: start() settled');
+      assert.ok(started.error(), 'precondition: the malformed row rejected start()');
+      assert.true(service.started, 'precondition: the service is marked started, so start() is now a no-op');
+      assert.strictEqual(heapEntriesFor(service, goodRow.id), 1, 'precondition: the row before the throw was registered and scheduled');
+
+      assert.ok(service.timer, 'the timer is armed despite the throw');
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+      assert.strictEqual(invoked, 1, 'the surviving job still runs');
+    });
   });
 
   module('claim/settle integrity — a claim always gets a settle', function () {

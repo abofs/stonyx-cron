@@ -153,34 +153,60 @@ export default class CronService {
     if (this.started) return;
     this.started = true;
 
-    if (initialJobs) {
-      for (const job of initialJobs) {
-        // A `runningAtMs` on a rehydrated job is always stale. The claim it
-        // records was taken by a process that is gone, so nothing will ever
-        // settle it, and nothing reaps it — there is no lease on the field
-        // (tracked on #35). Left in place it is a permanently dead job that
-        // still reports healthy: `isDue` returns false forever because of the
-        // flag, `run()` answers `'already running'` forever, `update()` never
-        // touches `state.runningAtMs`, and `status()` counts it like any other.
-        // The consumer's only recovery would be remove() + add(), losing the
-        // job id and its run history.
-        //
-        // Same hazard, same treatment as the hand-release on the `'removed'`
-        // path in `#executeClaimed`: a claim with no reachable settle must be
-        // released. Assigned directly rather than via `applyResult` for the same
-        // reason — this releases the claim and nothing else. The job did not
-        // run, so it gets no run-log row, no `lastStatus`, and no recomputed
-        // `nextRunAtMs`; it is rescheduled from the store's own value below.
-        job.state.runningAtMs = undefined;
+    // `finally`, not a trailing statement. Reconciled with the same guard #53
+    // puts around `register`'s `runOnInit` invocation: a scheduler that is
+    // marked started but never armed is the terminal state both fixes exist to
+    // remove, reached here through the other entry point. `initialJobs` crosses
+    // a serialization boundary — it is whatever the consumer's store handed
+    // back — so `Job[]` is a compile-time claim about runtime data, and a row
+    // missing `state` throws mid-loop. Without this, `start()` leaves
+    // `started: true` (so it is now a no-op), the rows registered before the
+    // throw sitting in the heap, and NO timer: measured, `status()` then
+    // reports `{ started: true, jobCount: 1, nextWakeAtMs: <real> }` while
+    // nothing will ever fire. Silent and healthy-looking, again.
+    try {
+      if (initialJobs) {
+        for (const job of initialJobs) {
+          // A `runningAtMs` on a rehydrated job is always stale. The claim it
+          // records was taken by a process that is gone, so nothing will ever
+          // settle it, and nothing reaps it — there is no lease on the field
+          // (tracked on #35). Left in place it is a permanently dead job that
+          // still reports healthy: `isDue` returns false forever because of the
+          // flag, `run()` answers `'already running'` forever, `update()` never
+          // touches `state.runningAtMs`, and `status()` counts it like any other.
+          // The consumer's only recovery would be remove() + add(), losing the
+          // job id and its run history.
+          //
+          // Same hazard, same treatment as the hand-release on the `'removed'`
+          // path in `#executeClaimed`: a claim with no reachable settle must be
+          // released. Assigned directly rather than via `applyResult` for the same
+          // reason — this releases the claim and nothing else. The job did not
+          // run, so it gets no run-log row, no `lastStatus`, and no recomputed
+          // `nextRunAtMs`; it is rescheduled from the store's own value below.
+          //
+          // Written unconditionally, and deliberately NOT guarded on a
+          // `job.state.runningAtMs` read. Guarding it makes `start()` accept a
+          // row whose `state` is frozen — `structuredClone` + `Object.freeze`
+          // is an ordinary defensive rehydration — and that row is not usable
+          // by this class at all: `markRunning` writes the same field on every
+          // execution. Measured, the guard moves the failure from a throw out
+          // of `start()`, which the consumer's own `await` can catch, to a
+          // TypeError raised inside `onTimer`'s batch claim — a bare timer
+          // callback, so it surfaces as an unhandled rejection and is
+          // process-fatal under Node's default. Failing loudly at the store
+          // boundary is the better of the two, and the `finally` above keeps
+          // the rows that loaded before it scheduled.
+          job.state.runningAtMs = undefined;
 
-        this.jobs.set(job.id, job);
-        if (job.enabled && job.state.nextRunAtMs) {
-          this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
+          this.jobs.set(job.id, job);
+          if (job.enabled && job.state.nextRunAtMs) {
+            this.heap.push({ key: job.id, nextTrigger: job.state.nextRunAtMs });
+          }
         }
       }
+    } finally {
+      this.armTimer();
     }
-
-    this.armTimer();
   }
 
   /**
