@@ -104,21 +104,32 @@ function captureUnhandledRejections(): { seen: () => unknown[]; restore: () => v
 }
 
 /**
- * Temporarily enable the config-gated log channel.
+ * Pin the config-gated log channel on or off for the duration of one test.
  *
- * `test/config/environment.ts` pins `cron.log: false` and it IS applied — the
- * runner's tsx ESM loader resolves stonyx's `${basePath}.js` config specifier
- * to the `.ts` file — so `service.log()` is a no-op for the whole suite by
- * default. That is the right default (it is what makes the ungated-reporter
- * test below meaningful), but it also means the gated path can only be
- * exercised by flipping the flag for the duration of one test.
+ * `test/config/environment.js` pins `cron.log: false` and it IS applied —
+ * stonyx's config loader imports the `${basePath}.js` specifier directly, which
+ * is why that file is `.js` and must stay `.js` (#30, guarded by
+ * `test/unit/publish-surface-test.ts`). So `service.log()` is a no-op for the
+ * whole suite by default.
+ *
+ * Both directions are pinned explicitly, including the one that agrees with the
+ * suite default. A test that merely *reads* the flag and asserts it is `false`
+ * is asserting a precondition it did not establish: measured before this
+ * helper's `withGatedLoggingDisabled` half existed, the ungated-reporter test
+ * below failed its own precondition when this file was run in isolation, and
+ * passed in the full suite only because `test/unit/cron-test.ts` writes
+ * `config.cron.log = false` and never restores it. A precondition satisfied by
+ * another file's leaked state is not a precondition.
  */
-function withGatedLoggingEnabled(): { restore: () => void } {
+function withGatedLogging(enabled: boolean): { restore: () => void } {
   const previous = config.cron.log;
-  config.cron.log = true;
+  config.cron.log = enabled;
 
   return { restore: () => { config.cron.log = previous; } };
 }
+
+const withGatedLoggingEnabled = () => withGatedLogging(true);
+const withGatedLoggingDisabled = () => withGatedLogging(false);
 
 module('CronService — phase split (#34)', function (hooks) {
   setupIntegrationTests(hooks);
@@ -949,6 +960,10 @@ module('CronService — phase split (#34)', function (hooks) {
       // `status()` reports as healthy. The suite's own config pins that flag
       // false, so this asserts the design rationale against the real state
       // rather than a simulated one.
+      // Pinned off HERE, not inherited. The suite default is already `false`,
+      // but this test's whole point is the behaviour under that setting, so it
+      // establishes it rather than trusting whatever ran before it.
+      const gate = withGatedLoggingDisabled();
       const cronLog = sinon.stub(log, 'cron').resolves();
       const errorLog = sinon.stub(log, 'error').resolves();
 
@@ -976,6 +991,7 @@ module('CronService — phase split (#34)', function (hooks) {
       } finally {
         errorLog.restore();
         cronLog.restore();
+        gate.restore();
       }
     });
   });

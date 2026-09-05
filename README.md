@@ -51,7 +51,7 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 
 The default export above is `Cron`: a fire-and-forget interval registry. `@stonyx/cron/service` is a separate, heavier class for jobs that need CRUD, persistence, a run log and error backoff. It is not a drop-in replacement and the two do not share a scheduler.
 
-The two classes agree on the guarantee — the same job is never run concurrently with itself, and different jobs may overlap — but not on the mechanism or on what you can observe. `Cron` invokes callbacks fire-and-forget and reports a skipped run only through the `config.cron`-gated log. `CronService` **awaits** `onJobDue`, its return value shapes `status`/`error`/`summary`, and a refused run comes back to the caller as a value that no log setting can suppress — it is not logged.
+The two classes agree on the guarantee — the same job is never run concurrently with itself, and different jobs may overlap — but not on the mechanism or on what you can observe. `Cron` invokes callbacks fire-and-forget and reports a skipped run only as an ungated `log.warn` line, one per stuck run, never as a value. `CronService` **awaits** `onJobDue`, its return value shapes `status`/`error`/`summary`, and a refused run comes back to the caller as a value that no log setting can suppress — it is not logged. The two therefore agree on one more thing than the contrast suggests: neither can be made silent by `config.cron.log`.
 
 ```js
 import CronService from '@stonyx/cron/service';

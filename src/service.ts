@@ -77,8 +77,11 @@ function forLog(value: string, maxLength: number): string {
  * differ: it renders for a log line only, so it prefers `err.stack`; this one
  * is also returned to the caller as `ExecuteResult.error` and persisted in a
  * per-job run log, where a stack would be an unbounded blob in every stored
- * failure. Recorded in `docs/architecture.md` under Error Handling — do not
- * merge them into a shared helper without reading that first.
+ * failure. Recorded in `docs/architecture.md` under Code Patterns &
+ * Conventions -> Private Members -> "Two `describeError` helpers, deliberately
+ * not shared (#34 / #36)" — do not merge them into a shared helper without
+ * reading that first. NOT the `### Error Handling` section further down, which
+ * is about the legacy `Cron` and does not carry this decision.
  */
 function describeError(err: unknown): string {
   try {
