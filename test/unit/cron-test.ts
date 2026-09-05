@@ -569,4 +569,104 @@ module('[Unit] Cron — safe callback invocation (#36)', function (hooks) {
     );
     assert.ok(String(call?.args[0]).includes('[FORGED]'), 'the key is still reported, escaped rather than dropped');
   });
+  /*
+   * Phase 3 WARNING-4 residue. That finding was closed against `describeKey`,
+   * which is genuinely fixed: `JSON.stringify` escapes the key. The error half
+   * of the same log line was never covered. `describeError` returns `err.stack`
+   * verbatim, and a stack is multi-line by construction with the
+   * consumer-supplied `err.message` on its first line, so the identical forgery
+   * still lands through the error argument at `main.ts:122`, `:251` and `:264`.
+   *
+   * Measured downstream, not assumed: `@stonyx/logs` writes
+   * `${timestamp} ${content}\n` straight to a newline-delimited file
+   * (`dist/index.js`, `log()` -> `writeToFile`) and never flattens `content`.
+   * A `\n` inside `content` therefore closes the record, and everything after
+   * it is read back as its own entry carrying an attacker-authored
+   * `[timestamp] ...` prefix a reader cannot tell from a real one.
+   */
+
+  const FORGED = '[9/5/2026, 1:00:00 AM] Cron - Job "payments" completed successfully';
+
+  /** Assert a reported line is a single record that still carries its content. */
+  function assertSingleLine(assert: Assert, line: string, contains: string, label: string): void {
+    assert.notOk(
+      /[\r\n\u2028\u2029]/.test(line),
+      `${label}: no raw line terminator reaches the log (got: ${JSON.stringify(line)})`,
+    );
+    assert.ok(line.includes(contains), `${label}: the hostile text is escaped, not dropped`);
+  }
+
+  test('a newline in an async job error cannot forge a log line', async function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+
+    // Idiomatic, not contrived: multi-line `Error` messages are routine
+    // (assertion diffs, aggregated validation failures, an upstream body echoed
+    // back), and every `Error` carries a multi-line `stack` regardless.
+    cron.register('asyncForge', async () => {
+      throw new Error(`upstream refused\n${FORGED}`);
+    }, '1');
+
+    await clock.tickAsync(1200);
+
+    const call = errorSpy.getCalls().find(c => /Cron job "asyncForge" failed/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the async job failure was reported at all');
+    assertSingleLine(assert, String(call?.args[0]), FORGED, 'async rejection path (main.ts:251)');
+  });
+
+  test('a newline in a synchronously thrown job error cannot forge a log line', function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+
+    cron.register('syncForge', () => {
+      throw new Error(`upstream refused\n${FORGED}`);
+    }, '1', true);
+
+    const call = errorSpy.getCalls().find(c => /Cron job "syncForge" failed on init/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the sync job failure was reported at all');
+    assertSingleLine(assert, String(call?.args[0]), FORGED, 'sync throw path (main.ts:264)');
+  });
+
+  test('a newline in a non-Error thrown value cannot forge a log line', function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+
+    // `describeError`'s second branch. `String(err)` is just as raw as `stack`,
+    // and throwing a string is common enough in consumer code to matter.
+    cron.register('stringForge', () => { throw `upstream refused\n${FORGED}`; }, '1', true);
+
+    const call = errorSpy.getCalls().find(c => /Cron job "stringForge" failed on init/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the thrown string was reported at all');
+    assertSingleLine(assert, String(call?.args[0]), FORGED, 'String(err) branch (main.ts:264)');
+  });
+
+  test('a newline in a scheduler-tick failure cannot forge a log line', async function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+
+    cron.register('probe', () => {}, '1');
+    sinon.stub(cron, 'runDueJobs').rejects(new Error(`tick died\n${FORGED}`));
+
+    await clock.tickAsync(1200);
+
+    const call = errorSpy.getCalls().find(c => /Cron scheduler tick failed/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the tick failure was reported at all');
+    assertSingleLine(assert, String(call?.args[0]), FORGED, 'scheduler tick path (main.ts:122)');
+  });
+
+  test('an unbounded error stack cannot swamp a log line', function (assert) {
+    const errorSpy = sinon.stub(log, 'error');
+    const err = new Error('huge');
+
+    // A deep async stack is thousands of characters. Interpolated whole, one
+    // failing job writes megabytes per hour into a file an operator then
+    // silences - the same disk-fill/ingest-cost pressure the stuck-job warning
+    // is rate-limited for.
+    Object.defineProperty(err, 'stack', { value: `Error: huge\n${'x'.repeat(20_000)}` });
+
+    cron.register('hugeStack', () => { throw err; }, '1', true);
+
+    const call = errorSpy.getCalls().find(c => /Cron job "hugeStack" failed on init/.test(String(c.args[0])));
+    assert.ok(call, 'precondition: the oversized failure was reported at all');
+
+    const line = String(call?.args[0]);
+    assert.ok(line.length < 1024, `the reported line is bounded (got ${line.length} chars)`);
+    assert.ok(line.endsWith('...'), 'the truncation is marked rather than silent');
+  });
 });
