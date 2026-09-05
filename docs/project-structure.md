@@ -43,7 +43,7 @@ stonyx-cron/
 │   ├── index.md                         - Documentation entry point
 │   ├── architecture.md                  - Core components & code patterns
 │   ├── extension-guide.md              - Extension points & pitfalls
-│   ├── improvements.md                 - Known improvement opportunities
+│   ├── improvements.md                 - Improvement opportunities (resolved entries kept, struck through)
 │   ├── project-structure.md             - Project overview & structure
 │   └── release.md                       - Release process
 ├── .github/

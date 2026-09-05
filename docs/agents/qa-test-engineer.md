@@ -16,13 +16,13 @@
 | Language | TypeScript (compiled to ESM) |
 | Test Framework | QUnit |
 | Mocking | Sinon (especially fake timers for timer-based tests) |
-| Build | tsc with separate `tsconfig.test.json` |
-| Test Runner | `stonyx test` CLI |
+| Build | `tsc` -> `dist/` (`pnpm build`, run as a prerequisite of `pnpm test`) |
+| Test Runner | QUnit, invoked directly on the TypeScript sources via `tsx/esm` |
 | CI | GitHub Actions (`ci.yml`) |
 
 ## Architecture Patterns
 
-- **Test build pipeline:** Tests compile to `dist-test/` via `tsconfig.test.json`, then run with `stonyx test 'dist-test/test/**/*-test.js'`
+- **Test build pipeline:** `pnpm test` is `pnpm build && NODE_ENV=test node --import tsx/esm --import ./test/setup.ts node_modules/qunit/bin/qunit.js 'test/**/*-test.ts'`. Tests are **not** precompiled to `dist-test/` and are **not** run through a `stonyx test` CLI; QUnit runs the `.ts` sources directly under `tsx`. The `pnpm build` prefix matters: it builds `dist/`, and the package self-reference `@stonyx/cron` resolves to `dist/main.js`, so a test importing `@stonyx/cron` exercises the **built artifact** rather than `src/`. `test/unit/cron-test.ts` pins that with an `import.meta.resolve` assertion — the 2026-09-01 revert wave was invisible precisely because nothing asserted on `dist/`.
 - **Integration tests available:** `test/integration/` tests the full CronService lifecycle — start, add jobs, timer fires, execute, re-schedule
 - **Sample handler files:** `test/sample/` contains sample job definitions and configs
 - **Fake timers essential:** Sinon fake timers are critical for testing `armTimer`, `onTimer`, and the heartbeat-like scheduling loop — real timers make tests slow and flaky
