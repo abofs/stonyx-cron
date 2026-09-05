@@ -462,6 +462,51 @@ module('CronService — phase split (#34)', function (hooks) {
         "the run reports 'removed'",
       );
     });
+
+    test("a claim on a stale object whose id now belongs to a replacement is refused", async function (assert) {
+      // `#claimJob`'s `'removed'` refusal is the only guard that fires BEFORE
+      // `markRunning` + `removeFromHeap`. Every other removed-path guard runs
+      // after the claim has already taken effect, so they can undo the claim but
+      // not the heap detach. That makes this guard's one distinctive hazard the
+      // one its comment names: `removeFromHeap` works by id, so claiming a stale
+      // object whose id has since been re-registered unschedules the LIVE
+      // replacement — a job that never ran, silently dropped off the heap, while
+      // `get()`/`list()`/`status()` all still report it healthy.
+      //
+      // Reached through `executeJob`, which is public: `run(id)` cannot express
+      // it because it resolves the id through `this.jobs` and would hand back
+      // the replacement. Removing the refusal leaves every other assertion here
+      // passing and only the heap assertion red, which is the point — the damage
+      // is done to a third object that the result value never mentions.
+      let invocations = 0;
+      service.onJobDue = () => { invocations++; return { status: 'ok' }; };
+
+      await service.start();
+      const original = await service.add({ name: 'Original', schedule: { ...EVERY_HOUR }, payload: { ...PAYLOAD } });
+
+      const replacement: Job = structuredClone(original);
+      replacement.name = 'Replacement';
+
+      await service.remove(original.id);
+      service.stop();
+      await service.start([replacement]);
+
+      assert.strictEqual(service.get(original.id), replacement, 'precondition: the id now resolves to the replacement');
+      assert.notStrictEqual(replacement, original, 'precondition: it is a different object');
+      assert.strictEqual(heapEntriesFor(service, original.id), 1, 'precondition: the replacement is scheduled');
+
+      const result = await service.executeJob(original);
+
+      assert.deepEqual(result, { status: 'skipped', reason: 'removed' }, 'the claim was refused');
+      assert.strictEqual(invocations, 0, 'the stale object never reached the callback');
+      assert.strictEqual(original.state.runningAtMs, undefined, 'the stale object was not marked running');
+      assert.strictEqual(
+        heapEntriesFor(service, original.id),
+        1,
+        "the replacement is still scheduled — the refused claim did not removeFromHeap its entry",
+      );
+      assert.strictEqual(service.runs(original.id).length, 0, 'no run-log row was written against the id');
+    });
   });
 
   module('restart — a stale claim must not rehydrate a permanently dead job', function () {
