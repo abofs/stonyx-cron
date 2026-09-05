@@ -113,7 +113,7 @@ function captureUnhandledRejections(): { seen: () => unknown[]; restore: () => v
  * and the override would vanish. That is why the file must stay `.js`.
  *
  * NOTHING IN THIS SUITE GUARDS THAT. Measured at this head: renaming it to
- * `.ts` leaves all 197 tests green. An earlier version of this comment cited
+ * `.ts` leaves all 198 tests green. An earlier version of this comment cited
  * `test/unit/publish-surface-test.ts` as the guard — it is not one. That test
  * asserts on the packaged root `config/environment.js` (#30), which is a
  * different file, in a different directory, and `test/` is not in `files` at

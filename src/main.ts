@@ -44,8 +44,8 @@ const MAX_LOGGED_ERROR_LENGTH = 512;
  * `describeError` directly below (`:82`, `:85`), and both are INSIDE that
  * function's own `try`, so a `TypeError` from `value.replace` on a
  * non-string degrades to `'<thrown value could not be rendered>'` and the log
- * record is still produced. `service.ts`'s callers are not so contained: `:692`
- * sits in a bare `catch` with nothing above it, and `:571`'s enclosing `catch`
+ * record is still produced. `service.ts`'s callers are not so contained: `:700`
+ * sits in a bare `catch` with nothing above it, and `:579`'s enclosing `catch`
  * has nothing left to report to — so a throw there destroyed the failure
  * record outright (measured: 0 records for a job that failed). That is why
  * totality was a live defect there and is not one here.

@@ -97,9 +97,12 @@ Tracked as #35.
 Five consumer-visible changes landed with the phase split (#34). Only the first
 two are visible in the emitted `dist/service.d.ts`; the rest are runtime
 behaviour and a type-checker will not find them for you. The measured
-`dist/service.d.ts` delta against the previous release is exactly three things:
-the class gained `#private;`, `reason` narrowed, and six type declarations
-gained `export`. `dist/main.d.ts` is unchanged.
+`dist/service.d.ts` delta against the previous release is exactly four things:
+the class gained `#private;`, `reason` narrowed, five type declarations gained
+`export` (`JobDueResult`, `ExecuteResult`, `ServiceStatus`, `ListOptions` and
+`OnJobDueCallback`), and `SkipReason` was added as a new exported type — it did
+not exist in the previous release, so it gained nothing. `HeapEntry` remains
+unexported. `dist/main.d.ts` is unchanged.
 
 1. **`ExecuteResult.reason` narrowed** from `string` to `'not due' | 'already running' | 'removed'`, and gained the `'removed'` member. Comparing it against a literal outside the union, or `switch`ing on one, is now a compile error (`TS2367` / `TS2678`). Assigning it into `string | undefined` and spreading it are unaffected. The type is exported as `SkipReason`.
 2. **`CronService` is nominally typed.** It carries ECMAScript hard-private members, so the declarations emit `#private;` and a structurally hand-built test double no longer assigns to `CronService` (`TS2741: Property '#private' is missing`). The break is one-directional: `class X extends CronService` still compiles, and assigning a real `CronService` to your own hand-written interface still compiles. **Migration:** declare your own interface and depend on that instead of a `CronService`-typed mock.
