@@ -952,6 +952,87 @@ module('CronService — phase split (#34)', function (hooks) {
       }
     });
 
+    test('a non-string job name does not make run() reject', async function (assert) {
+      // `job.name` is typed `string`, but that is a compile-time claim about
+      // runtime data — the same status `start(initialJobs)`'s `Job[]` has.
+      // `normalize.ts` only GENERATES a name when the field is falsy
+      // (`if (!job.name)`), so a truthy non-string passes through untouched, and
+      // `createJob` assigns `input.name` verbatim. `add({ name: 12345 })` is
+      // accepted through the PUBLIC api and stores a number.
+      //
+      // `forLog` then called `value.replace(...)` on it. The template literal is
+      // evaluated at the call site, BEFORE `service.log()`'s `config.cron.log`
+      // early-return, so the gate does not matter: `run()` rejected with
+      // `TypeError: value.replace is not a function` instead of returning an
+      // `ExecuteResult`. That is the same contract violation `describeError`
+      // exists to prevent, one line up on the other interpolated value.
+      service.onJobDue = () => { throw new Error('boom'); };
+
+      await service.start();
+      const job = await service.add({
+        name: 12345 as unknown as string,
+        schedule: { ...EVERY_HOUR },
+        payload: { ...PAYLOAD },
+      });
+
+      assert.strictEqual(
+        typeof job.name, 'number',
+        'precondition: add() stored a non-string name, unvalidated',
+      );
+
+      const result = await service.run(job.id, 'force');
+
+      assert.strictEqual(result.status, 'error', 'run() RESOLVED with the callback failure rather than rejecting');
+      assert.strictEqual(result.error, 'boom', 'and the error is the callback\'s, not the log helper\'s');
+      assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'exactly one heap entry');
+    });
+
+    test('a job name whose toString throws still produces a failure record on the timer path', async function (assert) {
+      // The serious half. `forLog` threw while BUILDING the message, inside the
+      // reporter's own `try`, so the failure record was swallowed entirely —
+      // measured at 0 records for a job that failed. A job can fail silently,
+      // which is the exact outcome both log sinks exist to prevent.
+      //
+      // A name whose `toString` throws survives `String(value)` too, so this is
+      // the case that decides the fix has to be a `try`, not a coercion.
+      const gate = withGatedLoggingEnabled();
+      const cronLog = sinon.stub(log, 'cron').resolves();
+      const errorLog = sinon.stub(log, 'error').resolves();
+      const rejections = captureUnhandledRejections();
+
+      try {
+        service.onJobDue = () => { throw new Error('callback boom'); };
+
+        await service.start();
+        const job = await service.add({ name: 'placeholder', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+        // Assigned after add() so `normalize`/`createJob` are not the subject
+        // here: this is the `start(initialJobs)` shape, a name that arrived
+        // from a store rather than through the public constructor path.
+        job.name = { toString() { throw new Error('hostile name'); } } as unknown as string;
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        const failureLines = cronLog.args.map(args => args[0] as string).filter(line => line.includes('failed:'));
+        assert.strictEqual(failureLines.length, 1, 'the failure record was emitted, not swallowed by the reporter itself');
+        assert.true(
+          failureLines[0].includes('callback boom'),
+          'and it carries the real failure, not the log helper\'s',
+        );
+        assert.strictEqual(errorLog.callCount, 0, 'nothing escaped to the batch-loop reporter — the job failure was handled in place');
+        assert.strictEqual(rejections.seen().length, 0, 'no unhandled rejection escaped');
+        assert.strictEqual(job.state.runningAtMs, undefined, 'the claim was released');
+        assert.strictEqual(service.runs(job.id).length, 1, 'and the run was recorded');
+      } finally {
+        rejections.restore();
+        errorLog.restore();
+        cronLog.restore();
+        gate.restore();
+      }
+    });
+
     test('the ungated per-job reporter still fires with config.cron.log === false', async function (assert) {
       // The reason `onTimer`'s per-job handler routes around `service.log()` and
       // calls `log.error` directly: `service.log()` early-returns when

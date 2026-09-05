@@ -48,9 +48,39 @@ const MAX_LOGGED_NAME_LENGTH = 120;
  * text. Newlines become the literal two characters so the content survives for
  * a reader, and the length cap keeps one pathological value from swamping the
  * file.
+ *
+ * TOTAL, for the same reason `describeError` below is total, and the parameter
+ * is coerced even though it is typed `string`. `job.name` is typed `string` but
+ * that is a compile-time claim about runtime data: `normalize.ts` only
+ * GENERATES a name when the field is falsy, so `add({ name: 12345 })` stores a
+ * number through the public API, and `start(initialJobs)` takes names verbatim
+ * from the consumer's store \u2014 the same untrusted boundary `start()` already
+ * hardens `state` against.
+ *
+ * Fixed HERE rather than by coercing in `normalize`, deliberately. Coercing at
+ * `normalize` closes the `add()` path only; the rehydration path bypasses both
+ * `normalize` and `createJob` entirely, and that is the path this class already
+ * treats as hostile. And this helper is on the ERROR path \u2014 a helper that
+ * throws while building an error report destroys the report it exists to
+ * produce. Measured pre-fix: `run()` rejected with `TypeError: value.replace is
+ * not a function` instead of returning an `ExecuteResult`, and on the timer
+ * path the failure record was swallowed entirely (0 records for a job that
+ * failed) because the throw happened inside the reporter's own `try`.
+ *
+ * `String(value)` alone is NOT enough: a value whose `toString` or
+ * `Symbol.toPrimitive` throws raises out of the coercion itself, so the `try`
+ * is load-bearing and not belt-and-braces. Kept typed `string` rather than
+ * widened to `unknown` so call sites still get compile-time pressure; the
+ * runtime coercion is the defence, not the signature.
  */
 function forLog(value: string, maxLength: number): string {
-  const flattened = value.replace(/\r\n|[\r\n\u2028\u2029]/g, '\\n');
+  let flattened: string;
+
+  try {
+    flattened = String(value).replace(/\r\n|[\r\n\u2028\u2029]/g, '\\n');
+  } catch {
+    return '<unrenderable value>';
+  }
 
   return flattened.length > maxLength ? `${flattened.slice(0, maxLength)}...` : flattened;
 }
