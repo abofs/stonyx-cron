@@ -55,6 +55,9 @@ consumer's responsibility.
 - `callback` (Function): Async function to execute on each trigger
 - `interval` (number): Time in seconds between executions
 - `runOnInit` (boolean): Whether to run callback immediately
+- The `runOnInit` invocation goes through `invokeJob` — the same single call
+  site the drain loop uses — and `scheduleNextRun()` is called from a `finally`,
+  so a job is never left registered-but-unscheduled
 
 **`unregister(key)`**
 - Removes a job from the scheduler
@@ -243,7 +246,7 @@ try {
 }
 ```
 
-Four rules that fall out of this and are easy to break:
+Five rules that fall out of this and are easy to break:
 
 1. **Interpolate the error into the message.** `@stonyx/logs` reads a second
    argument as `logToFile`, not as a format argument, so `log.error(msg, err)`
@@ -253,10 +256,20 @@ Four rules that fall out of this and are easy to break:
    the `typeof result.then` probe. A callback may return an object whose `then`
    is a throwing getter; reading it outside the guard aborts the drain loop
    before `scheduleNextRun()`, which is the original defect again.
-3. **`scheduleNextRun()` runs in a `finally`,** and the timer callback in
+3. **`scheduleNextRun()` runs in a `finally`** at *both* call sites that invoke
+   a callback — `runDueJobs` and `register` — and the timer callback in
    `scheduleNextRun` carries a terminal `.catch`. The invariant is that the
-   scheduler always re-arms, even if the loop body throws.
-4. **Report a wedged job on an ungated channel, once per stuck run.** `this.log`
+   scheduler always re-arms, even if the loop body throws. `register` is the
+   easier one to forget: it has no outer loop, so an escape there leaves the job
+   in `jobs` and in the heap with no timer behind it.
+4. **`describeError` must be total.** It runs *inside* the catch whose purpose
+   is to keep a callback failure away from the scheduler, and every read it
+   performs is on a consumer-controlled value: `instanceof` runs a proxy's
+   `getPrototypeOf` trap, `stack`/`name`/`message` can be accessors, and
+   `String(Object.create(null))` throws outright. A throw from the reporting
+   path escapes the guard it is inside and is the original defect again, so the
+   whole body sits in a `try` with a non-re-entrant fallback string.
+5. **Report a wedged job on an ungated channel, once per stuck run.** `this.log`
    returns early on `!config.cron?.log`, and a lost execution reported through a
    channel a config flag can silence is indistinguishable from a healthy
    scheduler. `report('warn', ...)` is ungated; `skipReported` bounds it to one

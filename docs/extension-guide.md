@@ -85,7 +85,9 @@ register(key, callback, interval, runOnInit=false) {
 }
 
 // Record stats around invokeJob — do NOT add a second callback call site, and
-// do NOT await the callback (see docs/architecture.md § Error Handling).
+// do NOT await the callback (see docs/architecture.md § Error Handling). An
+// overridden register() must also keep scheduleNextRun() in a `finally` around
+// the runOnInit invocation, for the same reason runDueJobs does.
 //
 // `runDueJobs` no longer has a point at which the callback has completed, so
 // post-run stats cannot be updated there at all. Hook `invokeJob` instead:
