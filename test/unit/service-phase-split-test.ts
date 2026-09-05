@@ -532,13 +532,23 @@ module('CronService — phase split (#34)', function (hooks) {
       const crashed = new CronService();
       crashed.onJobDue = () => new Promise<void>(() => {});
       await crashed.start();
-      const job = await crashed.add({ name: 'Crashed Mid Flight', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const live = await crashed.add({ name: 'Crashed Mid Flight', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
 
       await clock.tickAsync(31_000);
-      assert.ok(job.state.runningAtMs, 'precondition: the claim is recorded on the object a store would persist');
+      assert.ok(live.state.runningAtMs, 'precondition: the claim is recorded on the object a store would persist');
       crashed.stop();
 
-      // Restart against the same object, exactly as start(initialJobs) gets it.
+      // Round-trip through the store, because that is what makes the claim
+      // STALE. A crash ends the process, so the restart necessarily reads its
+      // rows back through serialization and gets fresh objects — the owner of
+      // this claim is unreachable by construction. Serializing here is not
+      // ceremony: the sibling test below proves `start()` must NOT release a
+      // claim it can still see an owner for, and passing `live` itself would be
+      // asking for that case while calling it this one.
+      const job: Job = structuredClone(live);
+      assert.ok(job.state.runningAtMs, 'precondition: the stale claim survived the store round-trip');
+      assert.notStrictEqual(job, live, 'precondition: rehydration produced a fresh object, as a real restart does');
+
       let invoked = 0;
       service.onJobDue = () => { invoked++; return { status: 'ok' }; };
       await service.start([job]);
@@ -552,6 +562,159 @@ module('CronService — phase split (#34)', function (hooks) {
       await clock.tickAsync(31_000);
       await clock.tickAsync(0);
       assert.true(invoked >= 2, 'the timer path fires the rehydrated job too');
+    });
+
+    test('start() does not release a claim held by an invocation still in flight', async function (assert) {
+      // The release above exists for a claim whose OWNER IS GONE. A `Job` object
+      // this process is still executing is the opposite case, and the two are
+      // indistinguishable from `job.state.runningAtMs` alone — which is why the
+      // release cannot be written unconditionally.
+      //
+      // Reaching it needs `stop()` then `start(sameObjects)` (an in-process
+      // restart against a store that hands back references rather than fresh
+      // rows), or a second `CronService` handed live rows. Releasing there
+      // re-arms a job that is already running, and the timer then launches a
+      // SECOND concurrent invocation of it. That is the one invariant this whole
+      // line of work exists to protect: the same job is never run concurrently
+      // with itself. A fix that breaks the invariant it was written to defend is
+      // worse than the defect.
+      //
+      // Measured against the unconditional release: `invoked` reaches 2.
+      const gate = deferred();
+      let invoked = 0;
+      service.onJobDue = () => { invoked++; return gate.promise.then(() => ({ status: 'ok' })); };
+
+      await service.start();
+      const job = await service.add({ name: 'Live Claim', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      const first = probe(service.run(job.id, 'force'));
+      await clock.tickAsync(0);
+
+      assert.strictEqual(invoked, 1, 'precondition: exactly one invocation is in flight');
+      assert.false(first.settled(), 'precondition: the callback is genuinely yielding, not a sync stub');
+      assert.ok(job.state.runningAtMs, 'precondition: the claim is LIVE, not stale');
+
+      service.stop();
+      await service.start([job]);
+
+      assert.ok(job.state.runningAtMs, 'the LIVE claim survived start() — it was not treated as stale');
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.strictEqual(invoked, 1, 'the timer did not launch a second concurrent invocation of the same job');
+
+      // And the surviving claim is not a leak: the original invocation still
+      // settles and releases it through the normal path.
+      gate.resolve();
+      await clock.tickAsync(0);
+      await clock.tickAsync(0);
+
+      assert.true(first.settled(), 'the original invocation settled normally');
+      assert.strictEqual(job.state.runningAtMs, undefined, 'and its settle released the claim');
+      assert.strictEqual(heapEntriesFor(service, job.id), 1, 'exactly one heap entry after the restart and the settle');
+    });
+
+    test('a SECOND service will not release a claim the first is still executing', async function (assert) {
+      // The timer's batch claim is the other of the two claim paths, and the
+      // cross-instance case is the one that decides where the in-flight record
+      // has to live. `onTimer`'s `running` latch already stops the SAME service
+      // re-entering, so a second `CronService` handed the same live rows is the
+      // shape that actually reaches the release with an invocation in flight —
+      // and it cannot see the first service's internals. That is why the record
+      // is keyed on the job OBJECT at module level rather than per instance:
+      // instance-local state would answer "not in flight" here and double-
+      // invoke.
+      const gate = deferred();
+      let invoked = 0;
+      const callback = () => { invoked++; return gate.promise.then(() => ({ status: 'ok' })); };
+
+      service.onJobDue = callback;
+      await service.start();
+      const job = await service.add({ name: 'Batch Claim', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+
+      assert.strictEqual(invoked, 1, 'precondition: the TIMER path claimed and invoked it, not run()');
+      assert.ok(job.state.runningAtMs, 'precondition: the claim is LIVE, held by the batch');
+
+      const second = new CronService();
+      second.onJobDue = callback;
+
+      try {
+        await second.start([job]);
+
+        assert.ok(job.state.runningAtMs, 'the second service left the live claim alone');
+
+        await clock.tickAsync(31_000);
+        await clock.tickAsync(0);
+
+        assert.strictEqual(invoked, 1, 'and did not launch a concurrent invocation of a job another service is running');
+      } finally {
+        second.stop();
+      }
+
+      gate.resolve();
+      await clock.tickAsync(0);
+      await clock.tickAsync(0);
+      assert.strictEqual(job.state.runningAtMs, undefined, 'the first service\'s settle released the claim');
+    });
+
+    test('a claim left on an object whose invocation already ENDED is still released', async function (assert) {
+      // The other direction, and what keeps the in-flight record from becoming
+      // a way to make #34's defect permanent. Membership must mean "a settle is
+      // still coming" and nothing looser, so every route out of an invocation
+      // has to clear it — otherwise a store that hands back references gets a
+      // job this class will refuse to ever release again.
+      //
+      // Route 1: a normal settle.
+      service.onJobDue = () => ({ status: 'ok' });
+      await service.start();
+      const settledJob = await service.add({ name: 'Settled', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      await service.run(settledJob.id, 'force');
+
+      assert.strictEqual(settledJob.state.runningAtMs, undefined, 'precondition: the invocation settled and released its own claim');
+
+      // Route 2: the hand-release on the 'removed' path — a job removed by a
+      // sibling's callback in the same due batch, which never reaches settle.
+      const removedFirst = deferred();
+      const removed = await service.add({ name: 'Removed', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+      const remover = await service.add({ name: 'Remover', schedule: { ...EVERY_30S }, payload: { ...PAYLOAD } });
+
+      service.onJobDue = async (job: Job) => {
+        if (job.id === remover.id) {
+          await service.remove(removed.id);
+          removedFirst.resolve();
+        }
+        return { status: 'ok' };
+      };
+
+      await clock.tickAsync(31_000);
+      await clock.tickAsync(0);
+      await removedFirst.promise;
+      await clock.tickAsync(0);
+
+      assert.strictEqual(removed.state.runningAtMs, undefined, 'precondition: the removed job was hand-released, not settled');
+
+      // Both objects now carry a claim their store persisted mid-flight in an
+      // earlier run and handed back by reference. No invocation owns either.
+      service.stop();
+      const staleAtMs = Date.now() - 86_400_000;
+      settledJob.state.runningAtMs = staleAtMs;
+      removed.state.runningAtMs = staleAtMs;
+
+      const restarted = new CronService();
+      restarted.onJobDue = () => ({ status: 'ok' });
+
+      try {
+        await restarted.start([settledJob, removed]);
+
+        assert.strictEqual(settledJob.state.runningAtMs, undefined, 'the stale claim on the SETTLED object was released');
+        assert.strictEqual(removed.state.runningAtMs, undefined, 'the stale claim on the HAND-RELEASED object was released');
+      } finally {
+        restarted.stop();
+      }
     });
 
     test('a deep-frozen store row is refused loudly by start(), not accepted and then fatal', async function (assert) {

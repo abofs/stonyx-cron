@@ -121,6 +121,34 @@ function describeError(err: unknown): string {
   }
 }
 
+/**
+ * Job objects whose claim is held by an invocation still running IN THIS
+ * PROCESS. Added by phase 1, removed by phase 3 (or by the one hand-release in
+ * `#executeClaimed`), so membership is exactly "a settle is still coming".
+ *
+ * This exists so `start()` can tell a STALE claim from a LIVE one. Both look
+ * identical in `job.state.runningAtMs` — a number — but they need opposite
+ * treatment: a stale claim must be released (it is #34's permanently-dead job,
+ * and nothing reaps it) while a live one must be left alone (releasing it lets
+ * the timer launch a second concurrent invocation of a job that is already
+ * running, breaking the one invariant this class advertises).
+ *
+ * Keyed on the Job OBJECT, not the id, and module-level rather than per
+ * instance, for the two reasons that make those the only workable choices:
+ *
+ *   - Object identity is what makes it correct across `CronService` instances.
+ *     A second service handed live rows sees the same objects, so it inherits
+ *     the answer rather than guessing; a per-instance set would report "not in
+ *     flight" for a claim a sibling instance is holding. `locked()`'s chain is
+ *     already module-global for the same reason.
+ *   - Identity is also what makes it correct after a real crash. A restart
+ *     deserializes its rows, so those are new objects and are never members —
+ *     the #34 release still fires, which is the whole point of it.
+ *
+ * `WeakSet`, so a job that is removed and dropped mid-flight is not retained.
+ */
+const inFlight = new WeakSet<Job>();
+
 interface HeapEntry extends HeapItem {
   key: string;
 }
@@ -187,7 +215,38 @@ export default class CronService {
   // -- Lifecycle -------------------------------------------------------
 
   /**
-   * Start the service. Loads jobs from store (if any), arms timer.
+   * Start the service. Loads jobs from store (if any), arms timer. A no-op if
+   * already started.
+   *
+   * `initialJobs` crosses a serialization boundary — it is whatever the
+   * consumer's store handed back — so `Job[]` is a compile-time claim about
+   * runtime data. Three behaviours follow from that and are worth knowing
+   * before you call this, because all three are deliberate and two of them
+   * differ from a plain "load and arm":
+   *
+   * 1. WRITES TO `row.state`. A STALE claim (`state.runningAtMs` set by a
+   *    process that is gone) is released, because nothing else ever will —
+   *    there is no lease on the field (#35) — and left in place it is a job
+   *    that is dead forever while `status()` reports it healthy. A LIVE claim,
+   *    held by an invocation still running in this process, is left alone:
+   *    releasing it would let the timer start a second concurrent invocation of
+   *    a job that is already running.
+   *
+   * 2. THROWS on a row this class cannot use, rather than accepting it. A row
+   *    whose `state` is missing, or frozen (`structuredClone` + `Object.freeze`
+   *    is an ordinary defensive rehydration), throws out of `start()` where the
+   *    caller's own `await` can catch it. The alternative is a `TypeError` from
+   *    inside a bare timer callback later — an unhandled rejection, and
+   *    process-fatal under Node's default.
+   *
+   * 3. ARMS THE TIMER EVEN IF IT THROWS. The rows loaded before the throw are
+   *    registered and scheduled. Without this, a throw leaves `started: true`
+   *    (so a retry is a no-op) with jobs in the heap and no timer: nothing ever
+   *    fires and `status()` still reports healthy.
+   *
+   * Hand it deserialized rows and all three are invisible. Hand it live `Job`
+   * objects this service is currently executing and only 1 is observable, by
+   * design.
    */
   async start(initialJobs?: Job[]): Promise<void> {
     if (this.started) return;
@@ -207,15 +266,15 @@ export default class CronService {
     try {
       if (initialJobs) {
         for (const job of initialJobs) {
-          // A `runningAtMs` on a rehydrated job is always stale. The claim it
-          // records was taken by a process that is gone, so nothing will ever
-          // settle it, and nothing reaps it — there is no lease on the field
-          // (tracked on #35). Left in place it is a permanently dead job that
-          // still reports healthy: `isDue` returns false forever because of the
-          // flag, `run()` answers `'already running'` forever, `update()` never
-          // touches `state.runningAtMs`, and `status()` counts it like any other.
-          // The consumer's only recovery would be remove() + add(), losing the
-          // job id and its run history.
+          // A STALE `runningAtMs` records a claim taken by a process that is
+          // gone. Nothing will ever settle it, and nothing reaps it — there is
+          // no lease on the field (tracked on #35). Left in place it is a
+          // permanently dead job that still reports healthy: `isDue` returns
+          // false forever because of the flag, `run()` answers
+          // `'already running'` forever, `update()` never touches
+          // `state.runningAtMs`, and `status()` counts it like any other. The
+          // consumer's only recovery would be remove() + add(), losing the job
+          // id and its run history.
           //
           // Same hazard, same treatment as the hand-release on the `'removed'`
           // path in `#executeClaimed`: a claim with no reachable settle must be
@@ -224,19 +283,36 @@ export default class CronService {
           // run, so it gets no run-log row, no `lastStatus`, and no recomputed
           // `nextRunAtMs`; it is rescheduled from the store's own value below.
           //
-          // Written unconditionally, and deliberately NOT guarded on a
-          // `job.state.runningAtMs` read. Guarding it makes `start()` accept a
-          // row whose `state` is frozen — `structuredClone` + `Object.freeze`
-          // is an ordinary defensive rehydration — and that row is not usable
-          // by this class at all: `markRunning` writes the same field on every
-          // execution. Measured, the guard moves the failure from a throw out
-          // of `start()`, which the consumer's own `await` can catch, to a
+          // But NOT every `runningAtMs` here is stale, and the field cannot
+          // tell you which — it is a number either way. `start()` early-returns
+          // when `started`, so reaching this with a LIVE claim needs `stop()`
+          // then `start(sameObjects)` (an in-process restart against a store
+          // that hands back references rather than fresh rows) or a second
+          // `CronService` handed live rows. Measured on the unconditional
+          // version: the release cleared a live claim, the timer then found the
+          // job due, and one job got TWO concurrent in-flight callbacks. That
+          // is the single invariant this class advertises and that #34/#35
+          // exist to protect, so the release is guarded on `inFlight` —
+          // authoritative object identity, not a heuristic on the timestamp.
+          // See `inFlight`'s docblock for why identity is also what keeps the
+          // stale case working after a real crash.
+          //
+          // The guard is deliberately NOT a `job.state.runningAtMs` read.
+          // Guarding on THAT makes `start()` accept a row whose `state` is
+          // frozen — `structuredClone` + `Object.freeze` is an ordinary
+          // defensive rehydration — and that row is not usable by this class at
+          // all: `markRunning` writes the same field on every execution.
+          // Measured, that guard moves the failure from a throw out of
+          // `start()`, which the consumer's own `await` can catch, to a
           // TypeError raised inside `onTimer`'s batch claim — a bare timer
           // callback, so it surfaces as an unhandled rejection and is
-          // process-fatal under Node's default. Failing loudly at the store
-          // boundary is the better of the two, and the `finally` above keeps
-          // the rows that loaded before it scheduled.
-          job.state.runningAtMs = undefined;
+          // process-fatal under Node's default. `inFlight` does not have that
+          // problem: a deserialized row is never a member, so the write still
+          // happens and the frozen row still fails loudly at the boundary. Both
+          // properties are tested; do not collapse the two guards into one.
+          if (!inFlight.has(job)) {
+            job.state.runningAtMs = undefined;
+          }
 
           this.jobs.set(job.id, job);
           if (job.enabled && job.state.nextRunAtMs) {
@@ -449,6 +525,7 @@ export default class CronService {
 
         for (const job of due) {
           markRunning(job);
+          inFlight.add(job);
         }
 
         return due;
@@ -582,6 +659,7 @@ export default class CronService {
     // recomputed `nextRunAtMs` — the job did not run.
     if (this.jobs.get(job.id) !== job) {
       job.state.runningAtMs = undefined;
+      inFlight.delete(job);
       return { status: 'skipped', reason: 'removed' };
     }
 
@@ -646,6 +724,7 @@ export default class CronService {
     if (job.state.runningAtMs) return 'already running';
 
     markRunning(job);
+    inFlight.add(job);
     this.removeFromHeap(job.id);
 
     return null;
@@ -715,6 +794,13 @@ export default class CronService {
 
       return { status, error, summary, durationMs };
     } finally {
+      // The invocation is over, so this job is no longer in flight in this
+      // process — whatever `applyResult` did or did not manage to write. In the
+      // `finally` so it covers a throw out of `applyResult` or `runLog.record`
+      // too: past this point no settle is coming, which is precisely the state
+      // `start()`'s release is for.
+      inFlight.delete(job);
+
       // One re-arm covering every exit, rather than one per branch. The claim
       // detached this job from the heap, so a timer that fired during the
       // unlocked invoke would have found nothing to arm — and `run()` has no
