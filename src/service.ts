@@ -244,9 +244,17 @@ export default class CronService {
    *    (so a retry is a no-op) with jobs in the heap and no timer: nothing ever
    *    fires and `status()` still reports healthy.
    *
-   * Hand it deserialized rows and all three are invisible. Hand it live `Job`
-   * objects this service is currently executing and only 1 is observable, by
-   * design.
+   * Which of the three you can observe depends on the CONTENT of the rows, not
+   * on whether they were deserialized — 1 fires only on a row that already
+   * carries a claim, and 2/3 only on a row this class cannot use. Hand it
+   * well-formed deserialized rows with no claim set and none of the three is
+   * observable. Hand it a deserialized row that DOES carry one and 1 and 2 are
+   * exactly what you get: measured, a stale `state.runningAtMs` of 1 comes back
+   * `undefined`, and a `structuredClone` + `Object.freeze` row makes `start()`
+   * throw `TypeError: Cannot assign to read only property 'runningAtMs'` with
+   * the timer still armed behind it. Hand it live `Job` objects this service is
+   * currently executing and only 1 is in play, by design — and on those it
+   * deliberately does nothing.
    */
   async start(initialJobs?: Job[]): Promise<void> {
     if (this.started) return;

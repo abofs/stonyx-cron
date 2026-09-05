@@ -81,14 +81,31 @@ const result = await service.run(job.id, 'force');
 
 **Concurrency.** A job is bounded to one in-flight invocation on every path — manual `run()` and the timer both claim it first. **Different** jobs are not bounded: the callback is deliberately invoked outside the internal lock, so N concurrent `run()` calls on N distinct jobs produce N concurrent callbacks. The scheduler itself never generates that fan-out (its timer path invokes a due batch sequentially); only a caller can. If you drive `run()` from a request handler, bound it on your side. Taking the callback out of the lock is what stops a callback that never settles from blocking `add`/`update`/`remove`; restoring the bound by putting it back would restore that deadlock.
 
+**The residual, stated plainly.** Taking the callback out of the lock fixes
+`add`/`update`/`remove`; it does **not** bound the callback. A callback that
+never settles still holds its job's claim forever, and because the timer's
+re-entrancy latch is only released when the batch settles, it also **stops the
+timer loop for every other job** — silently, with `status()` still reporting
+`started: true`. There is no execution timeout by design, so bounding your own
+callback is your responsibility, exactly as it is for `Cron`. Only a real
+process restart recovers it: `start()` releases a claim whose owner is provably
+gone, but an object still held in this process is deliberately left alone.
+Tracked as #35.
+
 ### Breaking changes in this line
 
-Four consumer-visible changes landed with the phase split (#34). All are measured against the emitted `dist/service.d.ts`:
+Five consumer-visible changes landed with the phase split (#34). Only the first
+two are visible in the emitted `dist/service.d.ts`; the rest are runtime
+behaviour and a type-checker will not find them for you. The measured
+`dist/service.d.ts` delta against the previous release is exactly three things:
+the class gained `#private;`, `reason` narrowed, and six type declarations
+gained `export`. `dist/main.d.ts` is unchanged.
 
 1. **`ExecuteResult.reason` narrowed** from `string` to `'not due' | 'already running' | 'removed'`, and gained the `'removed'` member. Comparing it against a literal outside the union, or `switch`ing on one, is now a compile error (`TS2367` / `TS2678`). Assigning it into `string | undefined` and spreading it are unaffected. The type is exported as `SkipReason`.
 2. **`CronService` is nominally typed.** It carries ECMAScript hard-private members, so the declarations emit `#private;` and a structurally hand-built test double no longer assigns to `CronService` (`TS2741: Property '#private' is missing`). The break is one-directional: `class X extends CronService` still compiles, and assigning a real `CronService` to your own hand-written interface still compiles. **Migration:** declare your own interface and depend on that instead of a `CronService`-typed mock.
-3. **`claimJob`, `settleJob` and `executeClaimed` are not published.** They were never a supported API; a claim taken without its matching settle strands the job permanently.
-4. **`run()` no longer serializes across jobs** — see the concurrency note above.
+3. **`claimJob`, `settleJob` and `executeClaimed` are not published.** Not a change against the previous release — these members did not exist there at all. Listed because they are new internals that look like API and are deliberately unreachable: a claim taken without its matching settle strands the job permanently in-process. Guarded by `test/unit/publish-surface-test.ts`.
+4. **`run()` no longer serializes across jobs** — a runtime change, not a d.ts one. See the concurrency note above.
+5. **`start()` now throws on a row it cannot use.** A `Job` whose `state` is missing or frozen — `structuredClone` + `Object.freeze` is an ordinary defensive rehydration — makes `start()` reject where the previous release resolved and carried on. Measured: previous release resolves and leaves the stale claim in place; this line throws `TypeError: Cannot assign to read only property 'runningAtMs'`. The timer is still armed for the rows loaded before the throw, so this surfaces at your `await` instead of as an unhandled rejection from inside a timer callback later. **Migration:** if your store hands back frozen rows, thaw `state` before passing them, or catch at the `start()` call site.
 
 `SkipReason`, `ExecuteResult`, `JobDueResult`, `ServiceStatus`, `ListOptions` and `OnJobDueCallback` are all exported from `@stonyx/cron/service`, so an exhaustive handler over `reason` is expressible.
 
