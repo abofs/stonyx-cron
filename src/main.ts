@@ -20,17 +20,30 @@ import { getTimestamp } from '@stonyx/utils/date';
 import MinHeap, { type HeapItem } from './min-heap.js';
 
 /**
- * Render an unknown thrown value as log text.
+ * Render an unknown thrown value as log text. Total by construction.
  *
  * `@stonyx/logs` reads a second argument as `logToFile`, not as a format
  * argument, so `log.error(message, err)` discards the error entirely *and*
  * forces a disk write on every failure. The error has to be interpolated into
  * the message instead — the shape `CronService.executeJob` already uses.
+ *
+ * Every read below touches a consumer-controlled value and can therefore throw:
+ * `instanceof` runs a proxy's `getPrototypeOf` trap, `stack`/`name`/`message`
+ * can be accessor properties, and `String(Object.create(null))` throws outright.
+ * This function runs *inside* `invokeJob`'s catch — the one place whose job is
+ * to stop a callback failure from reaching the scheduler — so a throw here
+ * escapes that catch and skips `scheduleNextRun()`, which is defect #36.
  */
 function describeError(err: unknown): string {
-  if (err instanceof Error) return err.stack ?? `${err.name}: ${err.message}`;
+  try {
+    if (err instanceof Error) return err.stack ?? `${err.name}: ${err.message}`;
 
-  return String(err);
+    return String(err);
+  } catch {
+    // Deliberately not re-entrant: describing the failure to describe the error
+    // would be the same read that just threw.
+    return '<thrown value could not be rendered>';
+  }
 }
 
 /**
