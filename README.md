@@ -51,7 +51,7 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 
 The default export above is `Cron`: a fire-and-forget interval registry. `@stonyx/cron/service` is a separate, heavier class for jobs that need CRUD, persistence, a run log and error backoff. It is not a drop-in replacement and the two do not share a scheduler.
 
-The two classes agree on the guarantee — the same job is never run concurrently with itself, and different jobs may overlap — but not on the mechanism or on what you can observe. `Cron` invokes callbacks fire-and-forget and reports a skipped run only as an ungated `log.warn` line, one per stuck run, never as a value. `CronService` **awaits** `onJobDue`, its return value shapes `status`/`error`/`summary`, and a refused run comes back to the caller as a value that no log setting can suppress — it is not logged. The two therefore agree on one more thing than the contrast suggests: neither can be made silent by `config.cron.log`.
+The two classes agree on the guarantee — the same job is never run concurrently with itself, and different jobs may overlap — but not on the mechanism or on what you can observe. `Cron` invokes callbacks fire-and-forget and reports a skipped run only as an ungated `log.warn` line, one per stuck run, never as a value. `CronService` **awaits** `onJobDue`, its return value shapes `status`/`error`/`summary`, and a refused run comes back to the caller as a value that no log setting can suppress — it is not logged. The two therefore agree on one more thing than the contrast suggests: neither can have a *refused* run made silent by `config.cron.log` — `Cron`'s skip warning is ungated, and `CronService`'s refusal is a return value rather than a log line. A job *failure* is the opposite case, and there the two classes genuinely diverge; see [Configuration](#configuration).
 
 ```js
 import CronService from '@stonyx/cron/service';
@@ -104,9 +104,28 @@ config.cron = {
 config.debug = true; // optional: debug logs for job registration and execution
 ```
 
-`config.cron.log` gates **informational** messages only. Error reports and the
-stuck-job warning described above are never gated by it, so setting it to `false`
-cannot make a dropped execution silent.
+`config.cron.log` gates the `log.cron` channel only. **The two classes route job
+failures differently, so what `log: false` costs you depends on which one you are
+running.** Measured on this build, with a callback that throws:
+
+| | Failure channel | Records with `log: false` |
+| :--- | :--- | :--- |
+| `Cron` (default export) | ungated `log.error` | emitted — unchanged |
+| `CronService` | **gated** `log.cron` | **none** |
+
+- **`Cron`** reports a callback's throw or rejection through `log.error`, and the
+  stuck-job warning described above through `log.warn`. Neither is gated, so
+  setting `log` to `false` cannot make a dropped or failed execution silent.
+- **`CronService`** reports a job whose `onJobDue` callback throws through the
+  **gated** channel, so `log: false` yields **zero** log records for that
+  failure. It stays observable as `ExecuteResult.error` and as a run-log row —
+  but a job driven off the timer rather than `run()` has no caller to read that
+  return value, so the failure is visible only in the run log. Only the timer
+  path's *unexpected* internal throw (a fault in the scheduler itself, not in
+  your callback) is reported on the ungated `log.error` channel.
+
+If you set `log: false` in production and rely on `CronService`, read failures
+from the run log or from `ExecuteResult`, not from the log file.
 
 ## License
 
