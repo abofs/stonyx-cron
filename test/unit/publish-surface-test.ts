@@ -57,9 +57,23 @@ module('[Unit] Publish surface', function () {
 
     // Scoped to declarations, not the whole file: each name is legitimately
     // mentioned inside JSDoc prose, and a substring match would pass on that.
+    // The anchor is `^\s*`, and every JSDoc line here begins with `*`, so prose
+    // cannot reach the name position.
+    //
+    // `;` is in the terminator class and is the load-bearing member of it.
+    // `tsc` does NOT emit a signature for a TypeScript-`private` member — it
+    // emits the bare name, `private claimJob;`. Without `;` the `(private\s+)?`
+    // alternative is dead: it cannot match anything the compiler produces.
+    // Measured — flipping ONLY `#claimJob` to `private claimJob` puts
+    // `private claimJob;` into `dist/service.d.ts` with this test green, because
+    // the `#private;` assertion above only fires when ALL THREE members flip.
+    // A one-member flip is the likeliest form of this regression (it is what a
+    // drive-by "make it testable" edit looks like), and `docs/architecture.md`
+    // cites this test as what makes the `#`-vs-`private` house rule
+    // enforceable, so it has to catch that case.
     for (const name of ['claimJob', 'settleJob', 'executeClaimed']) {
       assert.notOk(
-        new RegExp(`^\\s*(private\\s+)?${name}\\s*[(<:]`, 'm').test(declarations),
+        new RegExp(`^\\s*(private\\s+)?${name}\\s*[(<:;]`, 'm').test(declarations),
         `${name} is not declared in the published surface`
       );
     }
