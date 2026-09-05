@@ -163,9 +163,16 @@ export default class Cron {
       this.log(`job has been registered with interval: ${interval}`, key);
     }
 
-    if (runOnInit) this.invokeJob(job, true);
-
-    this.scheduleNextRun();
+    // `finally`, not a trailing statement, for the same reason as `runDueJobs`:
+    // a job that is registered but never scheduled is defect #36's terminal
+    // state reached through the other entry point. `invokeJob` is total, so
+    // this guard should be unreachable — which is exactly why it is a guard and
+    // not an assumption.
+    try {
+      if (runOnInit) this.invokeJob(job, true);
+    } finally {
+      this.scheduleNextRun();
+    }
   }
 
   unregister(key: string): void {
