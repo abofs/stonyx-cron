@@ -15,6 +15,8 @@ That runs `pnpm build && NODE_ENV=test node --import tsx/esm --import ./test/set
 - `test/sample/`: sample job payloads.
 - `test/config/environment.js`: test config overrides. It sets `cron.log: false` for the whole suite, so `service.log()` is a no-op in tests. A test that needs to observe a gated log line sets `config.cron.log` itself and restores the value it captured beforehand, not a hardcoded literal. A test that depends on the flag being off pins it off itself rather than inheriting it.
 
+  The file can be `.js` or `.ts`: with the declared `stonyx@0.2.3-beta.98`, `importConfig` tries `test/config/environment.ts`, then `.js` (measured: renaming it to `.ts` keeps `cron.log` false and the suite green). An earlier note said it must stay `.js`; that held only for the stonyx releases whose loader looked for `.js` alone (abofs/stonyx#105), and it is no longer true. What does matter is that the file exists. If it is deleted, the override is skipped without an error and `cron.log` falls back to `true` from `config/environment.js`. `test/unit/cron-test.ts` ("test config override") catches that by reading `config.cron.log` at module load, before any test changes it. Renaming the file to an extension the loader does not resolve, such as `.mjs`, fails the boot with `Config present but not loadable`.
+
 ## Test Structure
 
 Tests use QUnit modules with `setupIntegrationTests` from `stonyx/test-helpers`:
@@ -96,7 +98,7 @@ Each rule below comes from a test that once passed against broken code.
 - **Never await a possibly-hung path from the test body.** Float the promise and assert a settled flag after `clock.tickAsync(0)`. A hung path then fails an assertion instead of timing out the runner.
 - **Sample at the right moment.** `findDueJobs` pops heap entries and silently discards any whose job is not due, so the scheduler heals a duplicate heap entry on the next timer pass. An assertion placed after a trailing `tickAsync` measures the healed state. Sample at settle time, or go through `run()` (which arms a timer but never fires one) and assert with no trailing tick.
 - **Scope heap assertions to a key:** `heap.items.filter(i => i.key === job.id).length`, never `items.length`.
-- **Call `resetLock()` (from `src/locked.ts`) in `afterEach`.** The lock is module-global, so one poisoned chain cascades into every later test.
+- **Call `resetLock()` (from `src/locked.ts`, published as `@stonyx/cron/locked`) in `afterEach`.** The lock is module-global, so one poisoned chain cascades into every later test.
 - **Label assertions by what they prove.** `test/unit/service-phase-split-test.ts` uses `precondition:` for facts that also hold on the unfixed code, `reached:` for checks that the fixed path actually ran, and `guard:` for assertions that pass both before and after a fix.
 
 ## Coverage
