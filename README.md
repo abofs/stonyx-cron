@@ -47,6 +47,24 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 
 > `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
 
+## Exports
+
+| Import path | What it exports |
+| :--- | :--- |
+| `@stonyx/cron` | `Cron` (default), the interval registry above |
+| `@stonyx/cron/service` | `CronService` (default), see [CronService](#cronservice) |
+| `@stonyx/cron/schedule` | `computeNextRunAtMs`, `validateSchedule`, and the `Schedule` types |
+| `@stonyx/cron/cron-parser` | `parseCronExpression`, `parseField`, `nextOccurrence`, `validateCronExpression` |
+| `@stonyx/cron/job` | `createJob`, `updateJob`, `applyResult`, `isDue`, `markRunning`, `errorBackoffMs`, and the `Job` types |
+| `@stonyx/cron/normalize` | `normalizeJobInput`, `normalizeSchedule`, `normalizePayload`, `recoverFlatParams` |
+| `@stonyx/cron/run-log` | `RunLog` (default) |
+| `@stonyx/cron/locked` | `locked`, `resetLock` |
+| `@stonyx/cron/min-heap` | `MinHeap` (default) |
+
+## Samples
+
+[`test/sample/`](https://github.com/abofs/stonyx-cron/tree/dev/test/sample) is the canonical usage reference for job definitions: legacy `Cron` intervals and every `CronService` schedule kind. It is not included in the npm package.
+
 ## CronService
 
 The default export above is `Cron`: a fire-and-forget interval registry. `@stonyx/cron/service` is a separate, heavier class for jobs that need CRUD, persistence, a run log and error backoff. It is not a drop-in replacement and the two do not share a scheduler.
