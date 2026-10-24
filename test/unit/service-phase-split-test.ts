@@ -9,7 +9,7 @@
  * Separately, `run()` executes without detaching the job from the heap first,
  * so every manual run permanently duplicates the heap entry.
  *
- * House pattern per `.claude/testing.md`: sinon fake timers with
+ * House pattern per `docs/testing.md`: sinon fake timers with
  * `shouldAdvanceTime: false`. No real timers, no sleeps. Hang probes float the
  * promise rather than awaiting it, then assert a settled-flag after
  * `clock.tickAsync(0)` — so a hung path produces a clean assertion failure

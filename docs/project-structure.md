@@ -3,7 +3,7 @@
 ## Detailed Guides
 
 - [Architecture & Core Components](./architecture.md) -- Deep dive into Cron and MinHeap classes, dependencies, code patterns, and configuration reference
-- [Testing Guidelines](../.claude/testing.md) -- Test structure, fake timers, spies/stubs patterns, and running tests
+- [Testing](./testing.md) -- Test structure, fake timers, spies/stubs patterns, and running tests
 - [Extension Guide](./extension-guide.md) -- Extension points, common pitfalls, and future enhancement opportunities
 
 ---
