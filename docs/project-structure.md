@@ -37,14 +37,14 @@ See [architecture.md](./architecture.md) for full details on the Cron and MinHea
 ```
 stonyx-cron/
 ├── .claude/
-│   ├── CLAUDE.md                        - Agent entry point
-│   └── testing.md                       - Testing guidelines
+│   └── CLAUDE.md                        - Pointer to docs/index.md
 ├── docs/
 │   ├── index.md                         - Documentation entry point
 │   ├── architecture.md                  - Core components & code patterns
 │   ├── extension-guide.md              - Extension points & pitfalls
-│   ├── improvements.md                 - Improvement opportunities (resolved entries kept, struck through)
 │   ├── project-structure.md             - Project overview & structure
+│   ├── service-design.md                - CronService internals
+│   ├── testing.md                       - Testing guide
 │   └── release.md                       - Release process
 ├── .github/
 │   └── workflows/
