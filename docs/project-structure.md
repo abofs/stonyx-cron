@@ -38,27 +38,39 @@ See [architecture.md](./architecture.md) for full details on the Cron and MinHea
 stonyx-cron/
 ├── .claude/
 │   └── CLAUDE.md                        - Pointer to docs/index.md
-├── docs/
-│   ├── index.md                         - Documentation entry point
-│   ├── architecture.md                  - Core components & code patterns
-│   ├── extension-guide.md              - Extension points & pitfalls
-│   ├── project-structure.md             - Project overview & structure
-│   ├── service-design.md                - CronService internals
-│   ├── testing.md                       - Testing guide
-│   └── release.md                       - Release process
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                       - CI pipeline (PR checks)
-│       └── publish.yml                  - NPM publish workflow
+│       ├── publish.yml                  - npm publish workflow
+│       └── security-audit.yml           - Daily security audit (stonyx-workflows)
 ├── config/
 │   └── environment.js                   - Cron module configuration
+├── docs/
+│   ├── index.md                         - Documentation entry point
+│   ├── architecture.md                  - Core components & code patterns
+│   ├── deprecation-remediation.md       - npm deprecation-message remediation (#50)
+│   ├── extension-guide.md               - Extension points & pitfalls
+│   ├── project-structure.md             - Project overview & structure
+│   ├── release.md                       - Release process
+│   ├── service-design.md                - CronService internals
+│   └── testing.md                       - Testing guide
+├── scripts/
+│   └── deprecation-remediation.sh       - Applies that remediation
 ├── src/
-│   ├── main.js                          - Cron class (singleton scheduler)
-│   └── min-heap.js                      - MinHeap priority queue implementation
+│   ├── main.ts                          - Cron class (singleton scheduler, default export)
+│   ├── min-heap.ts                      - MinHeap priority queue
+│   ├── service.ts                       - CronService
+│   ├── job.ts, schedule.ts, cron-parser.ts, normalize.ts, run-log.ts, locked.ts
+│   │                                    - CronService building blocks (each a public subpath)
+│   └── types/                           - Ambient declarations for stonyx and @stonyx/utils
 ├── test/
-│   └── unit/
-│       ├── cron-test.js                 - Cron class unit tests
-│       └── min-heap-test.js             - MinHeap unit tests
+│   ├── config/environment.js            - Test config overrides (see testing.md)
+│   ├── integration/                     - Cron and CronService end-to-end tests
+│   ├── sample/                          - Canonical job-definition samples
+│   ├── unit/                            - One *-test.ts per source module
+│   └── setup.ts                         - QUnit --import setup that awaits Stonyx.ready
+├── stonyx-bootstrap.cjs                 - CommonJS bootstrap that loads Stonyx first
+├── tsconfig.json, tsconfig.test.json
 ├── package.json                         - Package metadata and exports
 ├── README.md                            - Project documentation
 ├── LICENSE.md                           - Apache 2.0 license
@@ -71,25 +83,7 @@ stonyx-cron/
 
 ## 4. Package Exports
 
-**File:** `stonyx-cron/package.json`
-
-```json
-{
-  "exports": {
-    ".": "./src/main.js",
-    "./min-heap": "./src/min-heap.js"
-  }
-}
-```
-
-**Usage:**
-```javascript
-// Import Cron class (default export)
-import Cron from '@stonyx/cron';
-
-// Import MinHeap class (for advanced usage)
-import MinHeap from '@stonyx/cron/min-heap';
-```
+`package.json` `exports` maps each public import path to `./dist/*.js`. The list of paths and what each one exports lives in one place: [README § Exports](../README.md#exports).
 
 ---
 

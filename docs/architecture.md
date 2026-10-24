@@ -2,7 +2,7 @@
 
 ## Core Components Deep Dive
 
-### Cron Class (`stonyx-cron/src/main.js`)
+### Cron Class (`stonyx-cron/src/main.ts`)
 
 **Properties:**
 ```javascript
@@ -47,11 +47,21 @@ explicitly abandoned is exactly what produces a permanently dead job. It is also
 the only recovery path from a stuck job. Bounding the callback remains the
 consumer's responsibility.
 
+**Known limitation: re-registering a live key orphans the old job.** `register`
+does not check whether `key` is already registered. It overwrites `jobs[key]`
+and pushes the new job, but leaves the old job object in the heap, where it keeps
+firing on its old schedule. `unregister(key)` finds only the new job, so the old
+one can no longer be removed. Measured against the built artifact:
+`register('dup', a, '5')`, `register('dup', b, '5')`, `unregister('dup')`, then
+20 s of fake time: `a` fired 4 times (`b` 0 times, `jobs` empty); a second
+`unregister('dup')` and another 20 s took `a` to 8. Call `unregister(key)` before
+registering a key again. No test pins this behaviour.
+
 **Public Methods:**
 
 **`register(key, callback, interval, runOnInit=false)`**
 - Registers a new recurring job
-- `key` (string): Unique job identifier
+- `key` (string): Job identifier. Uniqueness is not enforced; see the known limitation above
 - `callback` (Function): Async function to execute on each trigger
 - `interval` (number): Time in seconds between executions
 - `runOnInit` (boolean): Whether to run callback immediately
@@ -96,7 +106,7 @@ consumer's responsibility.
 - Conditional logging based on `config.cron?.log`
 - Formats messages as `Cron::${key} - ${text}:` or `Cron - ${text}:`
 
-### MinHeap Class (`stonyx-cron/src/min-heap.js`)
+### MinHeap Class (`stonyx-cron/src/min-heap.ts`)
 
 **Properties:**
 ```javascript
