@@ -6,7 +6,7 @@ This section provides specific guidance for common feature additions.
 
 ### Adding Job Metadata
 
-**Where:** `stonyx-cron/src/main.js`
+**Where:** `stonyx-cron/src/main.ts`
 
 **Pattern:**
 ```javascript
@@ -34,13 +34,13 @@ if (metadata.priority === 'high') {
 ### Adding Priority Levels
 
 **Where:**
-- `stonyx-cron/src/main.js` (Cron class)
-- `stonyx-cron/src/min-heap.js` (MinHeap comparison)
+- `stonyx-cron/src/main.ts` (Cron class)
+- `stonyx-cron/src/min-heap.ts` (MinHeap comparison)
 
 **Pattern:**
 ```javascript
 // Option 1: Secondary sort on priority
-// In min-heap.js bubbleUp/bubbleDown, change comparison:
+// In min-heap.ts bubbleUp/bubbleDown, change comparison:
 if (this.items[idx].nextTrigger < this.items[parentIdx].nextTrigger ||
     (this.items[idx].nextTrigger === this.items[parentIdx].nextTrigger &&
      this.items[idx].priority > this.items[parentIdx].priority)) {
@@ -48,7 +48,7 @@ if (this.items[idx].nextTrigger < this.items[parentIdx].nextTrigger ||
 }
 
 // Option 2: Offset nextTrigger by priority
-// In main.js setNextTrigger:
+// In main.ts setNextTrigger:
 setNextTrigger(job) {
   const priorityOffset = job.priority || 0;
   job.nextTrigger = getTimestamp() + parseInt(job.interval, 10) - priorityOffset;
@@ -64,7 +64,7 @@ setNextTrigger(job) {
 
 ### Adding Job Statistics
 
-**Where:** `stonyx-cron/src/main.js`
+**Where:** `stonyx-cron/src/main.ts`
 
 **Pattern:**
 ```javascript
@@ -111,7 +111,7 @@ getJobStats(key) {
 
 ### Adding Persistence
 
-**Where:** `stonyx-cron/src/main.js`
+**Where:** `stonyx-cron/src/main.ts`
 
 **Pattern:**
 ```javascript
@@ -144,7 +144,7 @@ async loadJobs(callbacks) {
 
 ### Adding One-Time Jobs
 
-**Where:** `stonyx-cron/src/main.js`
+**Where:** `stonyx-cron/src/main.ts`
 
 **Pattern:**
 ```javascript

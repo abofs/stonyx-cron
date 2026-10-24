@@ -8,6 +8,20 @@ import { setupIntegrationTests } from "stonyx/test-helpers";
 
 const { module, test } = QUnit;
 
+// Captured at module load, before any test has run and mutated the shared
+// config singleton. config/environment.js defaults `log` to true; only the
+// NODE_ENV=test override in test/config/environment.* sets it false. If that
+// override is removed or renamed to an extension the stonyx loader does not
+// resolve (it tries .ts, then .js), the merge is skipped silently and the suite
+// runs with logging on. This is the only thing that notices.
+const cronLogAtLoad = config.cron.log;
+
+module('[Unit] test config override', function () {
+  test('test/config/environment.* is loaded and pins cron.log off', function (assert) {
+    assert.strictEqual(cronLogAtLoad, false, 'cron.log is false before any test runs');
+  });
+});
+
 module('[Unit] Cron', function (hooks) {
   setupIntegrationTests(hooks);
 

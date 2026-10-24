@@ -98,7 +98,7 @@ they are kept accurate rather than identical.
 
 ## The decision
 
-Per the CTO decision on issue #50: **correct the deprecation text only. Do not
+Per the decision on issue #50: **correct the deprecation text only. Do not
 advance the `latest` dist-tag.**
 
 `latest` is vestigial in this org — consumers track the beta line via

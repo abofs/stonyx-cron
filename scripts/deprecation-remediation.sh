@@ -11,7 +11,7 @@
 #   maintained beta channel instead.
 #
 # WHAT THIS SCRIPT DOES NOT DO
-#   It does NOT touch any dist-tag. Per the CTO decision on issue #50 (option 2
+#   It does NOT touch any dist-tag. Per the decision on issue #50 (option 2
 #   only), `latest` stays at 0.2.0. Advancing it is deferred to a gated
 #   follow-up. There is no `npm dist-tag` call anywhere in this file.
 #

@@ -43,9 +43,27 @@ When a job is executed, its next trigger time is updated, and it is re-inserted 
 >
 > The same-job guarantee holds for the lifetime of a **registration**, not of a key: `unregister` followed by `register` on a key whose invocation is still in flight builds a fresh job object with a fresh guard, so the replacement can run alongside the abandoned invocation. That is also the only way to recover a permanently stuck job.
 >
+> **Re-registering a key does not replace its job.** Calling `register` with a key that is already registered leaves the old job firing on its old schedule, and `unregister(key)` can no longer remove it. Call `unregister(key)` first. See [docs/architecture.md](docs/architecture.md) (known limitation).
+>
 > Synchronous throws and asynchronous rejections are both caught and reported through `log.error`, with the error's stack interpolated into the message. Neither can stop the scheduler. Note that a rejection which previously escaped `register()` as an unhandled rejection — process-fatal under Node's default — is now swallowed into `log.error`.
 
-> `MinHeap` is also exported as a public subpath (`@stonyx/cron/min-heap`) and can be imported directly for advanced usage.
+## Exports
+
+| Import path | What it exports |
+| :--- | :--- |
+| `@stonyx/cron` | `Cron` (default), the interval registry above |
+| `@stonyx/cron/service` | `CronService` (default), see [CronService](#cronservice) |
+| `@stonyx/cron/schedule` | `computeNextRunAtMs`, `validateSchedule`, and the `Schedule` types |
+| `@stonyx/cron/cron-parser` | `parseCronExpression`, `parseField`, `nextOccurrence`, `validateCronExpression` |
+| `@stonyx/cron/job` | `createJob`, `updateJob`, `applyResult`, `isDue`, `markRunning`, `errorBackoffMs`, and the `Job` types |
+| `@stonyx/cron/normalize` | `normalizeJobInput`, `normalizeSchedule`, `normalizePayload`, `recoverFlatParams` |
+| `@stonyx/cron/run-log` | `RunLog` (default) |
+| `@stonyx/cron/locked` | `locked`, `resetLock` |
+| `@stonyx/cron/min-heap` | `MinHeap` (default) |
+
+## Samples
+
+[`test/sample/`](https://github.com/abofs/stonyx-cron/tree/dev/test/sample) is the canonical usage reference for job definitions: legacy `Cron` intervals and every `CronService` schedule kind. It is not included in the npm package.
 
 ## CronService
 
@@ -90,7 +108,8 @@ timer loop for every other job** — silently, with `status()` still reporting
 callback is your responsibility, exactly as it is for `Cron`. Only a real
 process restart recovers it: `start()` releases a claim whose owner is provably
 gone, but an object still held in this process is deliberately left alone.
-Tracked as #35.
+No execution timeout is implemented or currently tracked; see
+[docs/service-design.md](docs/service-design.md#what-the-phase-split-does-not-fix-a-hung-callback-stops-the-timer).
 
 ### Breaking changes in this line
 
