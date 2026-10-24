@@ -6,7 +6,7 @@ How `CronService` (`src/service.ts`, published as `@stonyx/cron/service`) works 
 
 ## Shape
 
-- **Not a singleton.** Consumers create `new CronService()` and manage its lifecycle with `start()` and `stop()`. The module carries the `stonyx-module` keyword, so Stonyx loads it synchronously and never calls `start()` for you.
+- **Not a singleton.** Consumers create `new CronService()` and manage its lifecycle with `start()` and `stop()`. The package carries the `stonyx-module` keyword but not `stonyx-async`, so the Stonyx module loader never imports or initializes it; consumers construct it, and nothing calls `start()` for you.
 - **Min-heap scheduling.** Jobs sit in a `MinHeap<HeapEntry>` keyed by `nextTrigger`, so `peek()` returns the soonest due job in O(1) and a timer tick does not scan every job. `removeFromHeap` rebuilds the heap (pop everything, re-push the rest), which is O(n log n); that is acceptable at typical job counts.
 - **Three schedule kinds**, each with its own branch in `computeNextRunAtMs`:
   - `at`: one-shot, ISO-8601 or epoch ms.
@@ -22,7 +22,7 @@ How `CronService` (`src/service.ts`, published as `@stonyx/cron/service`) works 
 ## Job outcomes
 
 - **Error backoff.** Consecutive failures delay the next run by 30 s, 60 s, 5 min, 15 min, then 1 h, and it stays at 1 h after that (`ERROR_BACKOFF_MS` in `src/job.ts`). The delay is applied as `Math.max(normalNext, nowMs + backoff)`, so it never shortens the interval. A success resets the count.
-- **One-shot jobs.** `at`-kind jobs are disabled after any terminal status, success or error. If `deleteAfterRun` is true (the default for `at`), the job is removed and no heap entry remains.
+- **One-shot jobs.** `at`-kind jobs are disabled after any terminal status, success or error. If `deleteAfterRun` is true (the default for `at`), the job is removed after a **successful** run (`status === 'ok'`), along with its heap entry and run log. A one-shot that errors is not removed: it stays in the job list, disabled, with its run log intact.
 - **Auto-disable on schedule errors.** Three consecutive `computeNextRunAtMs` failures disable the job, so a malformed schedule cannot retry forever. Updating the schedule resets the counter.
 - **Run log.** Every execution records jobId, status, error, summary, runAtMs, durationMs and nextRunAtMs, per job, at a configurable depth (`src/run-log.ts`).
 

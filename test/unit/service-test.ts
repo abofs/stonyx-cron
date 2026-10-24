@@ -241,6 +241,30 @@ module('CronService', function (hooks) {
       assert.strictEqual(result.deleted, true);
       assert.strictEqual(service.get(job.id), null);
     });
+
+    // Inverse of the test above, and the case docs/service-design.md "One-shot
+    // jobs" states: deletion requires status 'ok', so an errored one-shot is kept,
+    // disabled, with its run log.
+    test('one-shot job that errors is kept, disabled, even with deleteAfterRun', async function (assert) {
+      service.onJobDue = () => { throw new Error('kaboom'); };
+
+      await service.start();
+      const future = new Date(Date.now() + 60_000).toISOString();
+      const job = await service.add({
+        name: 'Once',
+        schedule: { kind: 'at', at: future },
+        payload: { kind: 'agentTurn', message: 'go' },
+        deleteAfterRun: true,
+      });
+
+      const result = await service.run(job.id);
+      assert.strictEqual(result.status, 'error');
+      assert.notStrictEqual(result.deleted, true, 'not reported as deleted');
+      const kept = service.get(job.id);
+      assert.ok(kept, 'errored one-shot is still in the job list');
+      assert.strictEqual(kept?.enabled, false, 'errored one-shot is disabled');
+      assert.strictEqual(service.runs(job.id).length, 1, 'its run log is kept');
+    });
   });
 
   module('run history', function () {
